@@ -29,7 +29,7 @@ type
   TIoEvent = (ieRead, ieWrite);
   TIoEvents = set of TIoEvent;
 
-  TKqueueListen = class(TAbstractCrossListen)
+  TKqueueListen = class(TCrossListenBase)
   private
     FLock: TObject;
     FIoEvents: TIoEvents;
@@ -40,13 +40,13 @@ type
     function _ReadEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
   public
-    constructor Create(const AOwner: ICrossSocket; const AListenSocket: THandle;
+    constructor Create(const AOwner: TCrossSocketBase; const AListenSocket: THandle;
       const AFamily, ASockType, AProtocol: Integer); override;
     destructor Destroy; override;
   end;
 
   PSendItem = ^TSendItem;
-  TSendItem = record
+  TSendItem = packed record
     Data: PByte;
     Size: Integer;
     Callback: TCrossConnectionCallback;
@@ -57,7 +57,7 @@ type
     procedure Notify(const Value: PSendItem; Action: TCollectionNotification); override;
   end;
 
-  TKqueueConnection = class(TAbstractCrossConnection)
+  TKqueueConnection = class(TCrossConnectionBase)
   private
     FLock: TObject;
     FSendQueue: TSendQueue;
@@ -71,11 +71,9 @@ type
     function _WriteEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
   public
-    constructor Create(const AOwner: ICrossSocket; const AClientSocket: THandle;
+    constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
       const AConnectType: TConnectType); override;
     destructor Destroy; override;
-
-    procedure Close; override;
   end;
 
   // KQUEUE 与 EPOLL 队列的差异
@@ -116,7 +114,7 @@ type
   // 所以修改套接字的监听事件时不会互相覆盖, 也就是说每个事件都会对应到一次
   // 触发, 这样就可以方便的使用接口的引用计数机制保持连接的有效性, 也不会出现
   // 内存泄漏
-  TKqueueCrossSocket = class(TAbstractCrossSocket)
+  TKqueueCrossSocket = class(TCrossSocketBase)
   private const
     MAX_EVENT_COUNT = 2048;
     SHUTDOWN_FLAG   = Pointer(-1);
@@ -147,9 +145,9 @@ type
     procedure _HandleRead(const AConnection: ICrossConnection);
     procedure _HandleWrite(const AConnection: ICrossConnection);
   protected
-    function CreateConnection(const AOwner: ICrossSocket; const AClientSocket: THandle;
+    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
       const AConnectType: TConnectType): ICrossConnection; override;
-    function CreateListen(const AOwner: ICrossSocket; const AListenSocket: THandle;
+    function CreateListen(const AOwner: TCrossSocketBase; const AListenSocket: THandle;
       const AFamily, ASockType, AProtocol: Integer): ICrossListen; override;
 
     procedure StartLoop; override;
@@ -176,7 +174,7 @@ implementation
 
 { TKqueueListen }
 
-constructor TKqueueListen.Create(const AOwner: ICrossSocket;
+constructor TKqueueListen.Create(const AOwner: TCrossSocketBase;
   const AListenSocket: THandle; const AFamily, ASockType, AProtocol: Integer);
 begin
   inherited;
@@ -258,7 +256,7 @@ end;
 
 { TKqueueConnection }
 
-constructor TKqueueConnection.Create(const AOwner: ICrossSocket;
+constructor TKqueueConnection.Create(const AOwner: TCrossSocketBase;
   const AClientSocket: THandle; const AConnectType: TConnectType);
 begin
   inherited;
@@ -303,17 +301,6 @@ begin
   FreeAndNil(FLock);
 
   inherited;
-end;
-
-procedure TKqueueConnection.Close;
-begin
-  if (_SetConnectStatus(csClosed) = csClosed) then Exit;
-
-  // shutdown可以触发套接字在kqueue中的事件
-  // 而直接close会将套接字从kqueue队列中移除, 不会触发任何事件
-  // 这就会导致连接对象在放入kqueue队列时增加的引用计数无法回收, 导致内存泄漏
-  // 使用shutdown触发事件后再释放连接可以确保不会产生内存泄露
-  TSocketAPI.Shutdown(Socket, 2);
 end;
 
 procedure TKqueueConnection._Lock;
@@ -605,55 +592,60 @@ begin
   LKqConnection := LConnection as TKqueueConnection;
 
   LKqConnection._Lock;
-  try
+
+  // 队列中没有数据了, 清除 ioWrite 标志
+  if (LKqConnection.FSendQueue.Count <= 0) then
+  begin
+    LKqConnection._UpdateIoEvent([]);
+    LKqConnection._Unlock;
+    Exit;
+  end;
+
+  // 获取Socket发送队列中的第一条数据
+  LSendItem := LKqConnection.FSendQueue.Items[0];
+
+  // 发送数据
+  LSent := PosixSend(LConnection.Socket, LSendItem.Data, LSendItem.Size);
+
+  {$region '全部发送完成'}
+  if (LSent >= LSendItem.Size) then
+  begin
+    // 先保存回调函数, 避免后面删除队列后将其释放
+    LCallback := LSendItem.Callback;
+
+    // 发送成功, 移除已发送成功的数据
+    if (LKqConnection.FSendQueue.Count > 0) then
+      LKqConnection.FSendQueue.Delete(0);
+
     // 队列中没有数据了, 清除 ioWrite 标志
     if (LKqConnection.FSendQueue.Count <= 0) then
-    begin
       LKqConnection._UpdateIoEvent([]);
-      Exit;
-    end;
 
-    // 获取Socket发送队列中的第一条数据
-    LSendItem := LKqConnection.FSendQueue.Items[0];
-
-    // 发送数据
-    LSent := PosixSend(LConnection.Socket, LSendItem.Data, LSendItem.Size);
-
-    {$region '全部发送完成'}
-    if (LSent >= LSendItem.Size) then
-    begin
-      // 先保存回调函数, 避免后面删除队列后将其释放
-      LCallback := LSendItem.Callback;
-
-      // 发送成功, 移除已发送成功的数据
-      if (LKqConnection.FSendQueue.Count > 0) then
-        LKqConnection.FSendQueue.Delete(0);
-
-      // 队列中没有数据了, 清除 ioWrite 标志
-      if (LKqConnection.FSendQueue.Count <= 0) then
-        LKqConnection._UpdateIoEvent([]);
-
-      if Assigned(LCallback) then
-        LCallback(LConnection, True);
-
-      Exit;
-    end;
-    {$endregion}
-
-    {$region '连接断开或发送错误'}
-    // 发送失败的回调会在连接对象的destroy方法中被调用
-    if (LSent < 0) then Exit;
-    {$endregion}
-
-    {$region '部分发送成功,在下一次唤醒发送线程时继续处理剩余部分'}
-    Dec(LSendItem.Size, LSent);
-    Inc(LSendItem.Data, LSent);
-    {$endregion}
-
-    LKqConnection._UpdateIoEvent([ieWrite]);
-  finally
     LKqConnection._Unlock;
+
+    if Assigned(LCallback) then
+      LCallback(LConnection, True);
+
+    Exit;
   end;
+  {$endregion}
+
+  {$region '连接断开或发送错误'}
+  // 发送失败的回调会在连接对象的destroy方法中被调用
+  if (LSent < 0) then
+  begin
+    LKqConnection._Unlock;
+    Exit;
+  end;
+  {$endregion}
+
+  {$region '部分发送成功,在下一次唤醒发送线程时继续处理剩余部分'}
+  Dec(LSendItem.Size, LSent);
+  Inc(LSendItem.Data, LSent);
+  {$endregion}
+
+  LKqConnection._UpdateIoEvent([ieWrite]);
+  LKqConnection._Unlock;
 end;
 
 
@@ -692,17 +684,15 @@ end;
 procedure TKqueueCrossSocket.StartLoop;
 var
   I: Integer;
-  LCrossSocket: ICrossSocket;
 begin
   if (FIoThreads <> nil) then Exit;
 
   _OpenIdleHandle;
 
   FKqueueHandle := kqueue();
-  LCrossSocket := Self;
   SetLength(FIoThreads, GetIoThreads);
   for I := 0 to Length(FIoThreads) - 1 do
-    FIoThreads[i] := TIoEventThread.Create(LCrossSocket);
+    FIoThreads[i] := TIoEventThread.Create(Self);
 
   _OpenStopHandle;
 end;
@@ -825,13 +815,13 @@ begin
   _Failed1;
 end;
 
-function TKqueueCrossSocket.CreateConnection(const AOwner: ICrossSocket;
+function TKqueueCrossSocket.CreateConnection(const AOwner: TCrossSocketBase;
   const AClientSocket: THandle; const AConnectType: TConnectType): ICrossConnection;
 begin
   Result := TKqueueConnection.Create(AOwner, AClientSocket, AConnectType);
 end;
 
-function TKqueueCrossSocket.CreateListen(const AOwner: ICrossSocket;
+function TKqueueCrossSocket.CreateListen(const AOwner: TCrossSocketBase;
   const AListenSocket: THandle; const AFamily, ASockType, AProtocol: Integer): ICrossListen;
 begin
   Result := TKqueueListen.Create(AOwner, AListenSocket, AFamily, ASockType, AProtocol);
@@ -880,7 +870,7 @@ begin
       end;
 
       TSocketAPI.SetNonBlock(LListenSocket, True);
-      TSocketAPI.SetReUseAddr(LListenSocket, True);
+      TSocketAPI.SetReUsePort(LListenSocket, True);
 
       if (LAddrInfo.ai_family = AF_INET6) then
         TSocketAPI.SetSockOpt<Integer>(LListenSocket, IPPROTO_IPV6, IPV6_V6ONLY, 1);

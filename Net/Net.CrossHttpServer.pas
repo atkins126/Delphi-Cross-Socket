@@ -939,6 +939,9 @@ type
   TCrossHttpRequestExceptionEvent = procedure(const Sender: TObject; const ARequest: ICrossHttpRequest; const AResponse: ICrossHttpResponse; const AException: Exception) of object;
   TCrossHttpDataEvent = procedure(const Sender: TObject; const AClient: ICrossHttpConnection; const ABuf: Pointer; const ALen: Integer) of object;
 
+  TCrossHttpBeforeRequestEvent = TCrossHttpConnEvent;
+  TCrossHttpAfterRequestEvent = procedure(const Sender: TObject; const AConnection: ICrossHttpConnection; const ASuccess: Boolean) of object;
+
   /// <summary>
   ///   <para>
   ///     跨平台HTTP服务器接口
@@ -1019,7 +1022,9 @@ type
     function GetMinCompressSize: Int64;
     function GetSessions: ISessions;
     function GetSessionIDCookieName: string;
+    function GetOnRequestBegin: TCrossHttpBeforeRequestEvent;
     function GetOnRequest: TCrossHttpRequestEvent;
+    function GetOnRequestEnd: TCrossHttpAfterRequestEvent;
     function GetOnRequestException: TCrossHttpRequestExceptionEvent;
     function GetOnPostDataBegin: TCrossHttpConnEvent;
     function GetOnPostData: TCrossHttpDataEvent;
@@ -1033,7 +1038,9 @@ type
     procedure SetMinCompressSize(const Value: Int64);
     procedure SetSessions(const Value: ISessions);
     procedure SetSessionIDCookieName(const Value: string);
+    procedure SetOnRequestBegin(const Value: TCrossHttpBeforeRequestEvent);
     procedure SetOnRequest(const Value: TCrossHttpRequestEvent);
+    procedure SetOnRequestEnd(const Value: TCrossHttpAfterRequestEvent);
     procedure SetOnRequestException(const Value: TCrossHttpRequestExceptionEvent);
     procedure SetOnPostDataBegin(const Value: TCrossHttpConnEvent);
     procedure SetOnPostData(const Value: TCrossHttpDataEvent);
@@ -1740,7 +1747,9 @@ type
     /// </remarks>
     property SessionIDCookieName: string read GetSessionIDCookieName write SetSessionIDCookieName;
 
+    property OnRequestBegin: TCrossHttpBeforeRequestEvent read GetOnRequestBegin write SetOnRequestBegin;
     property OnRequest: TCrossHttpRequestEvent read GetOnRequest write SetOnRequest;
+    property OnRequestEnd: TCrossHttpAfterRequestEvent read GetOnRequestEnd write SetOnRequestEnd;
     property OnRequestException: TCrossHttpRequestExceptionEvent read GetOnRequestException write SetOnRequestException;
     property OnPostDataBegin: TCrossHttpConnEvent read GetOnPostDataBegin write SetOnPostDataBegin;
     property OnPostData: TCrossHttpDataEvent read GetOnPostData write SetOnPostData;
@@ -1756,7 +1765,7 @@ type
     function GetResponse: ICrossHttpResponse;
     function GetServer: ICrossHttpServer;
   public
-    constructor Create(const AOwner: ICrossSocket; const AClientSocket: THandle;
+    constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
       const AConnectType: TConnectType); override;
 
     property Request: ICrossHttpRequest read GetRequest;
@@ -1848,7 +1857,7 @@ type
   private
     // Request 是 Connection 的子对象, 它的生命周期跟随 Connection
     // 这里使用弱引用, 不增加 Connection 的引用计数, 避免循环引用造成接口对象无法自动释放
-    [unsafe]FConnection: ICrossHttpConnection;
+    FConnection: TCrossHttpConnection;
     FHeader: THttpHeader;
     FCookies: TRequestCookies;
     FSession: ISession;
@@ -1857,7 +1866,7 @@ type
     FBody: TObject;
     FBodyType: TBodyType;
   public
-    constructor Create(const AConnection: ICrossHttpConnection);
+    constructor Create(const AConnection: TCrossHttpConnection);
     destructor Destroy; override;
 
     procedure Reset;
@@ -1910,7 +1919,7 @@ type
   private
     // Response 是 Connection 的子对象, 它的生命周期跟随 Connection
     // 这里使用弱引用, 不增加 Connection 的引用计数, 避免循环引用造成接口对象无法自动释放
-    [unsafe]FConnection: ICrossHttpConnection;
+    FConnection: TCrossHttpConnection;
     FRequest: ICrossHttpRequest;
     FStatusCode: Integer;
     FHeader: THttpHeader;
@@ -1944,30 +1953,33 @@ type
 
     {$region '压缩发送'}
     procedure SendZCompress(const AChunkSource: TCrossHttpChunkDataFunc; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure SendZCompress(const ABody; const ACount: NativeInt; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendZCompress(const ABody: Pointer; const ACount: NativeInt; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendZCompress(const ABody; const ACount: NativeInt; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure SendZCompress(const ABody: TBytes; const AOffset, ACount: NativeInt; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure SendZCompress(const ABody: TBytes; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendZCompress(const ABody: TBytes; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure SendZCompress(const ABody: TStream; const AOffset, ACount: Int64; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure SendZCompress(const ABody: TStream; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendZCompress(const ABody: TStream; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure SendZCompress(const ABody: string; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
     {$endregion}
 
     {$region '不压缩发送'}
     procedure SendNoCompress(const AChunkSource: TCrossHttpChunkDataFunc; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure SendNoCompress(const ABody; const ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendNoCompress(const ABody: Pointer; const ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendNoCompress(const ABody; const ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure SendNoCompress(const ABody: TBytes; const AOffset, ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure SendNoCompress(const ABody: TBytes; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendNoCompress(const ABody: TBytes; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure SendNoCompress(const ABody: TStream; const AOffset, ACount: Int64; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure SendNoCompress(const ABody: TStream; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure SendNoCompress(const ABody: TStream; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure SendNoCompress(const ABody: string; const ACallback: TCrossConnectionCallback = nil); overload;
     {$endregion}
 
     {$region '常规方法'}
-    procedure Send(const ABody; const ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure Send(const ABody: Pointer; const ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure Send(const ABody; const ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure Send(const ABody: TBytes; const AOffset, ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure Send(const ABody: TBytes; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure Send(const ABody: TBytes; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure Send(const ABody: TStream; const AOffset, ACount: Int64; const ACallback: TCrossConnectionCallback = nil); overload;
-    procedure Send(const ABody: TStream; const ACallback: TCrossConnectionCallback = nil); overload;
+    procedure Send(const ABody: TStream; const ACallback: TCrossConnectionCallback = nil); overload; inline;
     procedure Send(const ABody: string; const ACallback: TCrossConnectionCallback = nil); overload;
 
     procedure Json(const AJson: string; const ACallback: TCrossConnectionCallback = nil);
@@ -1982,7 +1994,7 @@ type
     procedure Attachment(const AFileName: string);
     {$endregion}
   public
-    constructor Create(const AConnection: ICrossHttpConnection);
+    constructor Create(const AConnection: TCrossHttpConnection);
     destructor Destroy; override;
   end;
 
@@ -2038,6 +2050,8 @@ type
     FMiddlewares: TCrossHttpRouters;
     FMiddlewaresLock: TMultiReadExclusiveWriteSynchronizer;
     FSessions: ISessions;
+    FOnRequestBegin: TCrossHttpBeforeRequestEvent;
+    FOnRequestEnd: TCrossHttpAfterRequestEvent;
     FOnRequest: TCrossHttpRequestEvent;
     FOnRequestException: TCrossHttpRequestExceptionEvent;
     FOnPostDataBegin: TCrossHttpConnEvent;
@@ -2068,6 +2082,8 @@ type
     function GetSessions: ISessions;
     function GetSessionIDCookieName: string;
     function GetOnRequest: TCrossHttpRequestEvent;
+    function GetOnRequestEnd: TCrossHttpAfterRequestEvent;
+    function GetOnRequestBegin: TCrossHttpBeforeRequestEvent;
     function GetOnRequestException: TCrossHttpRequestExceptionEvent;
     function GetOnPostDataBegin: TCrossHttpConnEvent;
     function GetOnPostData: TCrossHttpDataEvent;
@@ -2082,12 +2098,14 @@ type
     procedure SetSessions(const Value: ISessions);
     procedure SetSessionIDCookieName(const Value: string);
     procedure SetOnRequest(const Value: TCrossHttpRequestEvent);
+    procedure SetOnRequestBegin(const Value: TCrossHttpBeforeRequestEvent);
+    procedure SetOnRequestEnd(const Value: TCrossHttpAfterRequestEvent);
     procedure SetOnRequestException(const Value: TCrossHttpRequestExceptionEvent);
     procedure SetOnPostDataBegin(const Value: TCrossHttpConnEvent);
     procedure SetOnPostData(const Value: TCrossHttpDataEvent);
     procedure SetOnPostDataEnd(const Value: TCrossHttpConnEvent);
   protected
-    function CreateConnection(const AOwner: ICrossSocket; const AClientSocket: THandle;
+    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
       const AConnectType: TConnectType): ICrossConnection; override;
 
     function CreateRouter(const AMethod, APath: string;
@@ -2103,8 +2121,14 @@ type
       const ABuf: Pointer; const ALen: Integer); virtual;
     procedure TriggerPostDataEnd(const AConnection: ICrossHttpConnection); virtual;
 
+    // 处理请求前
+    procedure DoOnRequestBegin(const AConnection: ICrossHttpConnection); virtual;
+
     // 处理请求
     procedure DoOnRequest(const AConnection: ICrossHttpConnection); virtual;
+
+    // 处理请求后
+    procedure DoOnRequestEnd(const AConnection: ICrossHttpConnection; const ASuccess: Boolean); virtual;
   public
     constructor Create(const AIoThreads: Integer; const ASsl: Boolean); override;
     destructor Destroy; override;
@@ -2190,7 +2214,9 @@ type
     property Sessions: ISessions read GetSessions write SetSessions;
     property SessionIDCookieName: string read GetSessionIDCookieName write SetSessionIDCookieName;
 
+    property OnRequestBegin: TCrossHttpBeforeRequestEvent read GetOnRequestBegin write SetOnRequestBegin;
     property OnRequest: TCrossHttpRequestEvent read GetOnRequest write SetOnRequest;
+    property OnRequestEnd: TCrossHttpAfterRequestEvent read GetOnRequestEnd write SetOnRequestEnd;
     property OnRequestException: TCrossHttpRequestExceptionEvent read GetOnRequestException write SetOnRequestException;
     property OnPostDataBegin: TCrossHttpConnEvent read GetOnPostDataBegin write SetOnPostDataBegin;
     property OnPostData: TCrossHttpDataEvent read GetOnPostData write SetOnPostData;
@@ -2225,7 +2251,7 @@ end;
 
 { TCrossHttpConnection }
 
-constructor TCrossHttpConnection.Create(const AOwner: ICrossSocket;
+constructor TCrossHttpConnection.Create(const AOwner: TCrossSocketBase;
   const AClientSocket: THandle; const AConnectType: TConnectType);
 begin
   inherited;
@@ -2523,7 +2549,7 @@ begin
   FSessionIDCookieName := SESSIONID_COOKIE_NAME;
 end;
 
-function TCrossHttpServer.CreateConnection(const AOwner: ICrossSocket;
+function TCrossHttpServer.CreateConnection(const AOwner: TCrossSocketBase;
   const AClientSocket: THandle; const AConnectType: TConnectType): ICrossConnection;
 begin
   Result := TCrossHttpConnection.Create(AOwner, AClientSocket, AConnectType);
@@ -2592,6 +2618,20 @@ begin
   Result := Route('DELETE', APath, ARouterMethod2);
 end;
 
+procedure TCrossHttpServer.DoOnRequestBegin(
+  const AConnection: ICrossHttpConnection);
+begin
+  if Assigned(FOnRequestBegin) then
+    FOnRequestBegin(Self, AConnection);
+end;
+
+procedure TCrossHttpServer.DoOnRequestEnd(
+  const AConnection: ICrossHttpConnection; const ASuccess: Boolean);
+begin
+  if Assigned(FOnRequestEnd) then
+    FOnRequestEnd(Self, AConnection, ASuccess);
+end;
+
 procedure TCrossHttpServer.DoOnRequest(const AConnection: ICrossHttpConnection);
 var
   LRequest: ICrossHttpRequest;
@@ -2646,17 +2686,6 @@ begin
     end;
     {$endregion}
 
-    {$region '响应请求事件'}
-    if Assigned(FOnRequest) then
-    begin
-      LHandled := False;
-      FOnRequest(Self, LRequest, LResponse, LHandled);
-
-      // 如果已经发送了数据, 则后续的事件和路由响应都不需要执行了
-      if LHandled or LResponse.Sent then Exit;
-    end;
-    {$endregion}
-
     {$region '路由'}
     FRoutersLock.BeginRead;
     try
@@ -2682,6 +2711,17 @@ begin
         // 如果已经发送了数据, 则后续的事件和路由响应都不需要执行了
         if LHandled or LResponse.Sent then Exit;
       end;
+    end;
+    {$endregion}
+
+    {$region '响应请求事件'}
+    if Assigned(FOnRequest)
+      and not (LHandled or LResponse.Sent) then
+    begin
+      FOnRequest(Self, LRequest, LResponse, LHandled);
+
+      // 如果已经发送了数据, 则后续的事件和路由响应都不需要执行了
+      if LHandled or LResponse.Sent then Exit;
     end;
     {$endregion}
 
@@ -2725,9 +2765,19 @@ begin
   Result := Route('GET', APath, ARouterMethod2);
 end;
 
+function TCrossHttpServer.GetOnRequestEnd: TCrossHttpAfterRequestEvent;
+begin
+  Result := FOnRequestEnd;
+end;
+
 function TCrossHttpServer.GetAutoDeleteFiles: Boolean;
 begin
   Result := FAutoDeleteFiles;
+end;
+
+function TCrossHttpServer.GetOnRequestBegin: TCrossHttpBeforeRequestEvent;
+begin
+  Result := FOnRequestBegin;
 end;
 
 function TCrossHttpServer.GetCompressible: Boolean;
@@ -2790,9 +2840,19 @@ begin
   Result := FStoragePath;
 end;
 
+procedure TCrossHttpServer.SetOnRequestEnd(const Value: TCrossHttpAfterRequestEvent);
+begin
+  FOnRequestEnd := Value;
+end;
+
 procedure TCrossHttpServer.SetAutoDeleteFiles(const Value: Boolean);
 begin
   FAutoDeleteFiles := Value;
+end;
+
+procedure TCrossHttpServer.SetOnRequestBegin(const Value: TCrossHttpBeforeRequestEvent);
+begin
+  FOnRequestBegin := Value;
 end;
 
 procedure TCrossHttpServer.SetCompressible(const Value: Boolean);
@@ -3110,6 +3170,7 @@ begin
       if (LRequest.FParseState = psDone) then
       begin
         LResponse.Reset;
+        DoOnRequestBegin(LHttpConnection);
         DoOnRequest(LHttpConnection);
         LRequest.Reset;
       end;
@@ -3449,7 +3510,7 @@ end;
 
 { TCrossHttpRequest }
 
-constructor TCrossHttpRequest.Create(const AConnection: ICrossHttpConnection);
+constructor TCrossHttpRequest.Create(const AConnection: TCrossHttpConnection);
 begin
   FConnection := AConnection;
 
@@ -3746,7 +3807,7 @@ begin
   end else
   begin
     FHostName := FRequestHost;
-    FHostPort := TCrossHttpServer(FConnection.Owner).Port;
+    FHostPort := GetConnection.Server.Port;
   end;
 
   FRequestConnection := FHeader['Connection'];
@@ -3795,7 +3856,7 @@ end;
 
 { TCrossHttpResponse }
 
-constructor TCrossHttpResponse.Create(const AConnection: ICrossHttpConnection);
+constructor TCrossHttpResponse.Create(const AConnection: TCrossHttpConnection);
 begin
   FConnection := AConnection;
   FRequest := AConnection.Request;
@@ -3887,7 +3948,7 @@ begin
     TNetEncoding.URL.Encode(TPath.GetFileName(AFileName)) + '"';
 end;
 
-procedure TCrossHttpResponse.Send(const ABody; const ACount: NativeInt;
+procedure TCrossHttpResponse.Send(const ABody: Pointer; const ACount: NativeInt;
   const ACallback: TCrossConnectionCallback);
 var
   LCompressType: TCompressType;
@@ -3896,6 +3957,12 @@ begin
     SendZCompress(ABody, ACount, LCompressType, ACallback)
   else
     SendNoCompress(ABody, ACount, ACallback);
+end;
+
+procedure TCrossHttpResponse.Send(const ABody; const ACount: NativeInt;
+  const ACallback: TCrossConnectionCallback);
+begin
+  Send(@ABody, ACount, ACallback);
 end;
 
 procedure TCrossHttpResponse.Send(const ABody: TBytes;
@@ -3911,7 +3978,7 @@ begin
   LCount := ACount;
   _AdjustOffsetCount(Length(ABody), LOffset, LCount);
 
-  Send(LBody[LOffset], LCount,
+  Send(Pointer(PByte(LBody) + LOffset), LCount,
     // CALLBACK
     procedure(const AConnection: ICrossConnection; const ASuccess: Boolean)
     begin
@@ -4200,16 +4267,16 @@ begin
   // 偏移为正数, 从头部开始计算偏移
   if (AOffset >= 0) then
   begin
-    AOffset := AOffset;
     if (AOffset >= ABodySize) then
       AOffset := ABodySize - 1;
   end else
   // 偏移为负数, 从尾部开始计算偏移
   begin
     AOffset := ABodySize + AOffset;
-    if (AOffset < 0) then
-      AOffset := 0;
   end;
+
+  if (AOffset < 0) then
+    AOffset := 0;
   {$endregion}
 
   {$region '修正 ACount'}
@@ -4229,16 +4296,16 @@ begin
   // 偏移为正数, 从头部开始计算偏移
   if (AOffset >= 0) then
   begin
-    AOffset := AOffset;
     if (AOffset >= ABodySize) then
       AOffset := ABodySize - 1;
   end else
   // 偏移为负数, 从尾部开始计算偏移
   begin
     AOffset := ABodySize + AOffset;
-    if (AOffset < 0) then
-      AOffset := 0;
   end;
+
+  if (AOffset < 0) then
+    AOffset := 0;
   {$endregion}
 
   {$region '修正 ACount'}
@@ -4258,9 +4325,10 @@ var
   LServer: ICrossHttpServer;
 begin
   LContType := GetContentType;
-  LServer := FConnection.Server;
+  LServer := GetConnection.Server;
 
-  if LServer.Compressible
+  if Assigned(LServer)
+    and LServer.Compressible
     and (ABodySize > 0)
     and ((LServer.MinCompressSize <= 0) or (ABodySize >= LServer.MinCompressSize))
     and ((Pos('text/', LContType) > 0)
@@ -4324,12 +4392,14 @@ end;
 procedure TCrossHttpResponse._Send(const ASource: TCrossHttpChunkDataFunc;
   const ACallback: TCrossConnectionCallback);
 var
+  LHttpConnection: ICrossHttpConnection;
   LSender: TCrossConnectionCallback;
   LKeepAlive: Boolean;
   LStatusCode: Integer;
 begin
   AtomicIncrement(FSendStatus);
 
+  LHttpConnection := GetConnection;
   LKeepAlive := FRequest.KeepAlive;
   LStatusCode := FStatusCode;
 
@@ -4342,9 +4412,13 @@ begin
       if not ASuccess then
       begin
         if Assigned(ACallback) then
-          ACallback(AConnection, False);
+          ACallback(LHttpConnection, False);
 
-        AConnection.Close;
+        if Assigned(LHttpConnection)
+          and Assigned(LHttpConnection.Server) then
+          TCrossHttpServer(LHttpConnection.Server).DoOnRequestEnd(LHttpConnection, False);
+
+        LHttpConnection.Close;
 
         LSender := nil;
 
@@ -4359,21 +4433,25 @@ begin
         or (LCount <= 0) then
       begin
         if Assigned(ACallback) then
-          ACallback(AConnection, True);
+          ACallback(LHttpConnection, True);
+
+        if Assigned(LHttpConnection)
+          and Assigned(LHttpConnection.Server) then
+          TCrossHttpServer(LHttpConnection.Server).DoOnRequestEnd(LHttpConnection, True);
 
         if not LKeepAlive
           or (LStatusCode >= 400{如果发送的是出错状态码, 则发送完成之后断开连接}) then
-          AConnection.Disconnect;
+          LHttpConnection.Disconnect;
 
         LSender := nil;
 
         Exit;
       end;
 
-      AConnection.SendBuf(LData^, LCount, LSender);
+      LHttpConnection.SendBuf(LData^, LCount, LSender);
     end;
 
-  LSender(FConnection, True);
+  LSender(LHttpConnection, True);
 end;
 
 procedure TCrossHttpResponse._Send(const AHeaderSource,
@@ -4399,14 +4477,14 @@ begin
     ACallback);
 end;
 
-procedure TCrossHttpResponse.SendNoCompress(const ABody; const ACount: NativeInt;
-  const ACallback: TCrossConnectionCallback);
+procedure TCrossHttpResponse.SendNoCompress(const ABody: Pointer;
+  const ACount: NativeInt; const ACallback: TCrossConnectionCallback);
 var
   P: PByte;
   LSize: NativeInt;
   LHeaderBytes: TBytes;
 begin
-  P := @ABody;
+  P := ABody;
   LSize := ACount;
 
   _Send(
@@ -4447,6 +4525,12 @@ begin
     end);
 end;
 
+procedure TCrossHttpResponse.SendNoCompress(const ABody; const ACount: NativeInt;
+  const ACallback: TCrossConnectionCallback);
+begin
+  SendNoCompress(@ABody, ACount, ACallback);
+end;
+
 procedure TCrossHttpResponse.SendNoCompress(const ABody: TBytes;
   const AOffset, ACount: NativeInt; const ACallback: TCrossConnectionCallback);
 var
@@ -4460,7 +4544,7 @@ begin
   LCount := ACount;
   _AdjustOffsetCount(Length(ABody), LOffset, LCount);
 
-  SendNoCompress(LBody[LOffset], LCount,
+  SendNoCompress(Pointer(PByte(LBody) + LOffset), LCount,
     // CALLBACK
     procedure(const AConnection: ICrossConnection; const ASuccess: Boolean)
     begin
@@ -4601,7 +4685,7 @@ begin
     Z_DEFLATED, WINDOW_BITS[ACompressType], 8, Z_DEFAULT_STRATEGY) <> Z_OK) then
   begin
     if Assigned(ACallback) then
-      ACallback(FConnection, False);
+      ACallback(GetConnection, False);
     Exit;
   end;
 
@@ -4683,13 +4767,14 @@ begin
     end);
 end;
 
-procedure TCrossHttpResponse.SendZCompress(const ABody; const ACount: NativeInt;
-  const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback);
+procedure TCrossHttpResponse.SendZCompress(const ABody: Pointer;
+  const ACount: NativeInt; const ACompressType: TCompressType;
+  const ACallback: TCrossConnectionCallback);
 var
   P: PByte;
   LSize: NativeInt;
 begin
-  P := @ABody;
+  P := ABody;
   LSize := ACount;
 
   SendZCompress(
@@ -4714,6 +4799,12 @@ begin
     ACallback);
 end;
 
+procedure TCrossHttpResponse.SendZCompress(const ABody; const ACount: NativeInt;
+  const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback);
+begin
+  SendZCompress(@ABody, ACount, ACompressType, ACallback);
+end;
+
 procedure TCrossHttpResponse.SendZCompress(const ABody: TBytes;
   const AOffset, ACount: NativeInt; const ACompressType: TCompressType;
   const ACallback: TCrossConnectionCallback);
@@ -4728,7 +4819,7 @@ begin
   LCount := ACount;
   _AdjustOffsetCount(Length(ABody), LOffset, LCount);
 
-  SendZCompress(LBody[LOffset], LCount, ACompressType,
+  SendZCompress(Pointer(PByte(LBody) + LOffset), LCount, ACompressType,
     // CALLBACK
     procedure(const AConnection: ICrossConnection; const ASuccess: Boolean)
     begin

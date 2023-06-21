@@ -29,7 +29,7 @@ type
   TIoEvent = (ieRead, ieWrite);
   TIoEvents = set of TIoEvent;
 
-  TEpollListen = class(TAbstractCrossListen)
+  TEpollListen = class(TCrossListenBase)
   private
     FLock: TObject;
     FIoEvents: TIoEvents;
@@ -41,13 +41,13 @@ type
     function _ReadEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
   public
-    constructor Create(const AOwner: ICrossSocket; const AListenSocket: THandle;
+    constructor Create(const AOwner: TCrossSocketBase; const AListenSocket: THandle;
       const AFamily, ASockType, AProtocol: Integer); override;
     destructor Destroy; override;
   end;
 
   PSendItem = ^TSendItem;
-  TSendItem = record
+  TSendItem = packed record
     Data: PByte;
     Size: Integer;
     Callback: TCrossConnectionCallback;
@@ -58,7 +58,7 @@ type
     procedure Notify(const Value: PSendItem; Action: TCollectionNotification); override;
   end;
 
-  TEpollConnection = class(TAbstractCrossConnection)
+  TEpollConnection = class(TCrossConnectionBase)
   private
     FLock: TObject;
     FSendQueue: TSendQueue;
@@ -73,7 +73,7 @@ type
     function _WriteEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
   public
-    constructor Create(const AOwner: ICrossSocket; const AClientSocket: THandle;
+    constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
       const AConnectType: TConnectType); override;
     destructor Destroy; override;
   end;
@@ -101,7 +101,7 @@ type
   // 后一次修改会修改之前的, 这就很难使用接口的引用计数机制来保持连接有效性了
   // 这里使用连接UID作为 epoll_ctl 的参数, 在事件触发时通过UID查找连接对象, 这样
   // 同样可以保证事件触发时访问到有效的连接对象, 而且不需要引用计数保证
-  TEpollCrossSocket = class(TAbstractCrossSocket)
+  TEpollCrossSocket = class(TCrossSocketBase)
   private const
     MAX_EVENT_COUNT = 2048;
     SHUTDOWN_FLAG   = UInt64(-1);
@@ -127,9 +127,9 @@ type
     procedure _HandleRead(const AConnection: ICrossConnection);
     procedure _HandleWrite(const AConnection: ICrossConnection);
   protected
-    function CreateConnection(const AOwner: ICrossSocket; const AClientSocket: THandle;
+    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
       const AConnectType: TConnectType): ICrossConnection; override;
-    function CreateListen(const AOwner: ICrossSocket; const AListenSocket: THandle;
+    function CreateListen(const AOwner: TCrossSocketBase; const AListenSocket: THandle;
       const AFamily, ASockType, AProtocol: Integer): ICrossListen; override;
 
     procedure StartLoop; override;
@@ -156,7 +156,7 @@ implementation
 
 { TEpollListen }
 
-constructor TEpollListen.Create(const AOwner: ICrossSocket;
+constructor TEpollListen.Create(const AOwner: TCrossSocketBase;
   const AListenSocket: THandle; const AFamily, ASockType, AProtocol: Integer);
 begin
   inherited;
@@ -232,7 +232,7 @@ end;
 
 { TEpollConnection }
 
-constructor TEpollConnection.Create(const AOwner: ICrossSocket;
+constructor TEpollConnection.Create(const AOwner: TCrossSocketBase;
   const AClientSocket: THandle; const AConnectType: TConnectType);
 begin
   inherited;
@@ -513,53 +513,59 @@ begin
   LEpConnection := LConnection as TEpollConnection;
 
   LEpConnection._Lock;
-  try
+
+  // 队列中没有数据了, 清除 ioWrite 标志
+  if (LEpConnection.FSendQueue.Count <= 0) then
+  begin
+    LEpConnection._UpdateIoEvent([]);
+    LEpConnection._Unlock;
+    Exit;
+  end;
+
+  // 获取Socket发送队列中的第一条数据
+  LSendItem := LEpConnection.FSendQueue.Items[0];
+
+  // 发送数据
+  LSent := PosixSend(LConnection.Socket, LSendItem.Data, LSendItem.Size);
+
+  {$region '全部发送完成'}
+  if (LSent >= LSendItem.Size) then
+  begin
+    // 先保存回调函数, 避免后面删除队列后将其释放
+    LCallback := LSendItem.Callback;
+
+    // 发送成功, 移除已发送成功的数据
+    if (LEpConnection.FSendQueue.Count > 0) then
+      LEpConnection.FSendQueue.Delete(0);
+
     // 队列中没有数据了, 清除 ioWrite 标志
     if (LEpConnection.FSendQueue.Count <= 0) then
-    begin
       LEpConnection._UpdateIoEvent([]);
-      Exit;
-    end;
 
-    // 获取Socket发送队列中的第一条数据
-    LSendItem := LEpConnection.FSendQueue.Items[0];
-
-    // 发送数据
-    LSent := PosixSend(LConnection.Socket, LSendItem.Data, LSendItem.Size);
-
-    {$region '全部发送完成'}
-    if (LSent >= LSendItem.Size) then
-    begin
-      // 先保存回调函数, 避免后面删除队列后将其释放
-      LCallback := LSendItem.Callback;
-
-      // 发送成功, 移除已发送成功的数据
-      if (LEpConnection.FSendQueue.Count > 0) then
-        LEpConnection.FSendQueue.Delete(0);
-
-      // 队列中没有数据了, 清除 ioWrite 标志
-      if (LEpConnection.FSendQueue.Count <= 0) then
-        LEpConnection._UpdateIoEvent([]);
-
-      if Assigned(LCallback) then
-        LCallback(LConnection, True);
-
-      Exit;
-    end;
-    {$endregion}
-
-    {$region '连接断开或发送错误'}
-    // 发送失败的回调会在连接对象的destroy方法中被调用
-    if (LSent < 0) then Exit;
-    {$endregion}
-
-    {$region '部分发送成功,在下一次唤醒发送线程时继续处理剩余部分'}
-    Dec(LSendItem.Size, LSent);
-    Inc(LSendItem.Data, LSent);
-    {$endregion}
-  finally
     LEpConnection._Unlock;
+
+    if Assigned(LCallback) then
+      LCallback(LConnection, True);
+
+    Exit;
   end;
+  {$endregion}
+
+  {$region '连接断开或发送错误'}
+  // 发送失败的回调会在连接对象的destroy方法中被调用
+  if (LSent < 0) then
+  begin
+    LEpConnection._Unlock;
+    Exit;
+  end;
+  {$endregion}
+
+  {$region '部分发送成功,在下一次唤醒发送线程时继续处理剩余部分'}
+  Dec(LSendItem.Size, LSent);
+  Inc(LSendItem.Data, LSent);
+  {$endregion}
+
+  LEpConnection._Unlock;
 end;
 
 
@@ -592,7 +598,6 @@ end;
 procedure TEpollCrossSocket.StartLoop;
 var
   I: Integer;
-  LCrossSocket: ICrossSocket;
 begin
   if (FIoThreads <> nil) then Exit;
 
@@ -603,10 +608,9 @@ begin
   // 并不是说队列的大小会受限于该值
   // http://man7.org/linux/man-pages/man2/epoll_create.2.html
   FEpollHandle := epoll_create(MAX_EVENT_COUNT);
-  LCrossSocket := Self;
   SetLength(FIoThreads, GetIoThreads);
   for I := 0 to Length(FIoThreads) - 1 do
-    FIoThreads[I] := TIoEventThread.Create(LCrossSocket);
+    FIoThreads[I] := TIoEventThread.Create(Self);
 
   _OpenStopHandle;
 end;
@@ -728,13 +732,13 @@ begin
   _Failed1;
 end;
 
-function TEpollCrossSocket.CreateConnection(const AOwner: ICrossSocket;
+function TEpollCrossSocket.CreateConnection(const AOwner: TCrossSocketBase;
   const AClientSocket: THandle; const AConnectType: TConnectType): ICrossConnection;
 begin
   Result := TEpollConnection.Create(AOwner, AClientSocket, AConnectType);
 end;
 
-function TEpollCrossSocket.CreateListen(const AOwner: ICrossSocket;
+function TEpollCrossSocket.CreateListen(const AOwner: TCrossSocketBase;
   const AListenSocket: THandle; const AFamily, ASockType, AProtocol: Integer): ICrossListen;
 begin
   Result := TEpollListen.Create(AOwner, AListenSocket, AFamily, ASockType, AProtocol);
@@ -783,7 +787,7 @@ begin
       end;
 
       TSocketAPI.SetNonBlock(LListenSocket, True);
-      TSocketAPI.SetReUseAddr(LListenSocket, True);
+      TSocketAPI.SetReUsePort(LListenSocket, True);
 
       if (LAddrInfo.ai_family = AF_INET6) then
         TSocketAPI.SetSockOpt<Integer>(LListenSocket, IPPROTO_IPV6, IPV6_V6ONLY, 1);
