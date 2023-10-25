@@ -9,16 +9,18 @@
 {******************************************************************************}
 unit Utils.DateTime;
 
+{$I zLib.inc}
+
 interface
 
 uses
   {$IFDEF MSWINDOWS}
-  Winapi.Windows,
+  Windows,
   {$ENDIF}
-  System.SysUtils,
-  System.DateUtils,
-  System.Types,
-  System.Math;
+  SysUtils,
+  DateUtils,
+  Types,
+  Math;
 
 type
   TDateTimeHelper = record helper for TDateTime
@@ -81,6 +83,9 @@ type
     property Minute: Word read GetMinute write SetMinute;
     property Second: Word read GetSecond write SetSecond;
     property Millisecond: Word read GetMillisecond write SetMillisecond;
+
+    procedure Decode(out AYear, AMonth, ADay,
+      AHour, AMinute, ASecond, AMilliSecond: Word);
 
     function ToString(const AFormatStr: string = ''): string; overload; inline;
     function ToISO8601(const AIsUtcDateTime: Boolean = False): string;
@@ -152,6 +157,7 @@ type
 
     function ToUniversalTime(const AForceDaylight: Boolean = False): TDateTime; inline;
     function ToLocalTime: TDateTime; inline;
+    function ToTimeStamp: TTimeStamp; inline;
   end;
 
 implementation
@@ -212,7 +218,7 @@ end;
 
 function TDateTimeHelper.DaysBetween(const ADateTime: TDateTime): Integer;
 begin
-  Result := System.DateUtils.DaysBetween(Self, ADateTime);
+  Result := DateUtils.DaysBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.DaysDiffer(const ADateTime: TDateTime): Integer;
@@ -244,6 +250,13 @@ end;
 function TDateTimeHelper.DecMonths(const ANumberOfMonths: Integer): TDateTime;
 begin
   Result := AddMonths(0 - ANumberOfMonths);
+end;
+
+procedure TDateTimeHelper.Decode(out AYear, AMonth, ADay, AHour, AMinute,
+  ASecond, AMilliSecond: Word);
+begin
+  DecodeDate(Self, AYear, AMonth, ADay);
+  DecodeTime(Self, AHour, AMinute, ASecond, AMilliSecond);
 end;
 
 function TDateTimeHelper.DecSeconds(const ANumberOfSeconds: Int64): TDateTime;
@@ -323,7 +336,7 @@ end;
 
 class function TDateTimeHelper.GetNow: TDateTime;
 begin
-  Result := System.SysUtils.Now;
+  Result := SysUtils.Now;
 end;
 
 function TDateTimeHelper.GetSecond: Word;
@@ -338,12 +351,12 @@ end;
 
 class function TDateTimeHelper.GetToday: TDateTime;
 begin
-  Result := System.SysUtils.Date;
+  Result := SysUtils.Date;
 end;
 
 class function TDateTimeHelper.GetTomorrow: TDateTime;
 begin
-  Result := System.SysUtils.Date + 1;
+  Result := SysUtils.Date + 1;
 end;
 
 function TDateTimeHelper.GetYear: Integer;
@@ -353,12 +366,12 @@ end;
 
 class function TDateTimeHelper.GetYesterDay: TDateTime;
 begin
-  Result := System.SysUtils.Date - 1;
+  Result := SysUtils.Date - 1;
 end;
 
 function TDateTimeHelper.HoursBetween(const ADateTime: TDateTime): Int64;
 begin
-  Result := System.DateUtils.HoursBetween(Self, ADateTime);
+  Result := DateUtils.HoursBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.HoursDiffer(const ADateTime: TDateTime): Int64;
@@ -374,17 +387,17 @@ end;
 
 function TDateTimeHelper.IsAM: Boolean;
 begin
-  Result := System.DateUtils.IsAM(Self);
+  Result := DateUtils.IsAM(Self);
 end;
 
 function TDateTimeHelper.IsInLeapYear: Boolean;
 begin
-  Result := System.DateUtils.IsInLeapYear(Self);
+  Result := DateUtils.IsInLeapYear(Self);
 end;
 
 function TDateTimeHelper.IsPM: Boolean;
 begin
-  Result := System.DateUtils.IsPM(Self);
+  Result := DateUtils.IsPM(Self);
 end;
 
 function TDateTimeHelper.IsSameDay(const ADateTime: TDateTime): Boolean;
@@ -412,12 +425,12 @@ end;
 
 function TDateTimeHelper.IsToday: Boolean;
 begin
-  Result := System.DateUtils.IsToday(Self);
+  Result := DateUtils.IsToday(Self);
 end;
 
 function TDateTimeHelper.MilliSecondsBetween(const ADateTime: TDateTime): Int64;
 begin
-  Result := System.DateUtils.MilliSecondsBetween(Self, ADateTime);
+  Result := DateUtils.MilliSecondsBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.MilliSecondsDiffer(const ADateTime: TDateTime): Int64;
@@ -427,7 +440,7 @@ end;
 
 function TDateTimeHelper.MinutesBetween(const ADateTime: TDateTime): Int64;
 begin
-  Result := System.DateUtils.MinutesBetween(Self, ADateTime);
+  Result := DateUtils.MinutesBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.MinutesDiffer(const ADateTime: TDateTime): Int64;
@@ -438,7 +451,7 @@ end;
 
 function TDateTimeHelper.MonthsBetween(const ADateTime: TDateTime): Integer;
 begin
-  Result := System.DateUtils.MonthsBetween(Self, ADateTime);
+  Result := DateUtils.MonthsBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.MonthsDiffer(const ADateTime: TDateTime): Integer;
@@ -449,7 +462,7 @@ end;
 
 function TDateTimeHelper.SecondsBetween(const ADateTime: TDateTime): Int64;
 begin
-  Result := System.DateUtils.SecondsBetween(Self, ADateTime);
+  Result := DateUtils.SecondsBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.SecondsDiffer(const ADateTime: TDateTime): Int64;
@@ -535,7 +548,7 @@ begin
   Result := Format('%.4d-%.2d-%.2dT%.2d:%.2d:%.2d.%d', [LYear, LMonth, LDay, LHour, LMinute, LSecond, LMilliseconds]);
 
   if not AIsUtcDateTime and (Self <> 0) then
-    LOffset := Self - TTimeZone.Local.ToUniversalTime(Self)
+    LOffset := Self - Self.ToUniversalTime
   else
     LOffset := 0;
 
@@ -550,8 +563,13 @@ end;
 function TDateTimeHelper.ToLocalTime: TDateTime;
 begin
   if (Self <> 0) then
-    Result := TTimeZone.Local.ToLocalTime(Self)
-  else
+  begin
+    {$ifdef delphi}
+    Result := TTimeZone.Local.ToLocalTime(Self);
+    {$else fpc}
+    Result := UniversalTimeToLocal(Self);
+    {$endif}
+  end else
     Result := Self;
 end;
 
@@ -559,7 +577,7 @@ function TDateTimeHelper.ToMilliseconds: Int64;
 var
   LTimeStamp: TTimeStamp;
 begin
-  LTimeStamp := DateTimeToTimeStamp(Self);
+  LTimeStamp := Self.ToTimeStamp;
   Result := (Int64(LTimeStamp.Date) * MSecsPerDay) + LTimeStamp.Time;
 end;
 
@@ -591,12 +609,22 @@ begin
     Result := FormatDateTime(AFormatStr, Self);
 end;
 
+function TDateTimeHelper.ToTimeStamp: TTimeStamp;
+begin
+  Result := DateTimeToTimeStamp(Self);
+end;
+
 function TDateTimeHelper.ToUniversalTime(
   const AForceDaylight: Boolean): TDateTime;
 begin
   if (Self <> 0) then
-    Result := TTimeZone.Local.ToUniversalTime(Self, AForceDaylight)
-  else
+  begin
+    {$ifdef delphi}
+    Result := TTimeZone.Local.ToUniversalTime(Self, AForceDaylight);
+    {$else fpc}
+    Result := LocalTimeToUniversal(Self);
+    {$endif}
+  end else
     Result := Self;
 end;
 
@@ -619,7 +647,7 @@ class function TDateTimeHelper.TryStrToDateTime(const AStr: string;
   end;
 
 var
-  P: PChar;
+  P, PEnd: PChar;
   LMSecsSince1970: Int64;
   LYear, LMonth, LDay, LHour, LMin, LSec, LMSec: Integer;
   LOffsetHour, LOffsetMin: Integer;
@@ -630,11 +658,12 @@ begin
   if (AStr = '') then Exit(False);
 
   P := PChar(AStr);
+  PEnd := P + Length(AStr);
   if (P^ = '/') and (StrLComp('Date(', P + 1, 5) = 0) then  // .NET: milliseconds since 1970-01-01
   begin
     Inc(P, 6);
     LMSecsSince1970 := 0;
-    while (P^ <> #0) and (P^ in ['0'..'9']) do
+    while (P < PEnd) and (P^ in ['0'..'9']) do
     begin
       LMSecsSince1970 := LMSecsSince1970 * 10 + (Ord(P^) - Ord('0'));
       Inc(P);
@@ -642,10 +671,10 @@ begin
     if (P^ = '+') or (P^ = '-') then // timezone information
     begin
       Inc(P);
-      while (P^ <> #0) and (P^ in ['0'..'9']) do
+      while (P < PEnd) and (P^ in ['0'..'9']) do
         Inc(P);
     end;
-    if (P[0] = ')') and (P[1] = '/') and (P[2] = #0) then
+    if (P + 2 = PEnd) and (P[0] = ')') and (P[1] = '/') then
       ADateTime := TDateTime(UnixDateDelta + (LMSecsSince1970 / MSecsPerDay))
     else
       Exit(False); // invalid format
@@ -727,7 +756,7 @@ begin
       if not TryEncodeTime(LHour, LMin, LSec, LMSec, LTime) then Exit(False);
       ADateTime := ADateTime + LTime;
     end else
-    if (P^ <> #0) then
+    if (P < PEnd) then
       Exit(False);
   end;
 
@@ -736,7 +765,7 @@ end;
 
 function TDateTimeHelper.WeeksBetween(const ADateTime: TDateTime): Integer;
 begin
-  Result := System.DateUtils.WeeksBetween(Self, ADateTime);
+  Result := DateUtils.WeeksBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.WeeksDiffer(const ADateTime: TDateTime): Integer;
@@ -748,54 +777,54 @@ end;
 function TDateTimeHelper.WithinDays(const ADateTime: TDateTime;
   const ADays: Integer): Boolean;
 begin
-  Result := System.DateUtils.WithinPastDays(Self, ADateTime, ADays);
+  Result := DateUtils.WithinPastDays(Self, ADateTime, ADays);
 end;
 
 function TDateTimeHelper.WithinHours(const ADateTime: TDateTime;
   const AHours: Int64): Boolean;
 begin
-  Result := System.DateUtils.WithinPastHours(Self, ADateTime, AHours);
+  Result := DateUtils.WithinPastHours(Self, ADateTime, AHours);
 end;
 
 function TDateTimeHelper.WithinMilliseconds(const ADateTime: TDateTime;
   const AMilliseconds: Int64): Boolean;
 begin
-  Result := System.DateUtils.WithinPastMilliSeconds(Self, ADateTime, AMilliseconds);
+  Result := DateUtils.WithinPastMilliSeconds(Self, ADateTime, AMilliseconds);
 end;
 
 function TDateTimeHelper.WithinMinutes(const ADateTime: TDateTime;
   const AMinutes: Int64): Boolean;
 begin
-  Result := System.DateUtils.WithinPastMinutes(Self, ADateTime, AMinutes);
+  Result := DateUtils.WithinPastMinutes(Self, ADateTime, AMinutes);
 end;
 
 function TDateTimeHelper.WithinMonths(const ADateTime: TDateTime;
   const AMonths: Integer): Boolean;
 begin
-  Result := System.DateUtils.WithinPastMonths(Self, ADateTime, AMonths);
+  Result := DateUtils.WithinPastMonths(Self, ADateTime, AMonths);
 end;
 
 function TDateTimeHelper.WithinSeconds(const ADateTime: TDateTime;
   const ASeconds: Int64): Boolean;
 begin
-  Result := System.DateUtils.WithinPastSeconds(Self, ADateTime, ASeconds);
+  Result := DateUtils.WithinPastSeconds(Self, ADateTime, ASeconds);
 end;
 
 function TDateTimeHelper.WithinWeeks(const ADateTime: TDateTime;
   const AWeeks: Integer): Boolean;
 begin
-  Result := System.DateUtils.WithinPastWeeks(Self, ADateTime, AWeeks);
+  Result := DateUtils.WithinPastWeeks(Self, ADateTime, AWeeks);
 end;
 
 function TDateTimeHelper.WithinYears(const ADateTime: TDateTime;
   const AYears: Integer): Boolean;
 begin
-  Result := System.DateUtils.WithinPastYears(Self, ADateTime, AYears);
+  Result := DateUtils.WithinPastYears(Self, ADateTime, AYears);
 end;
 
 function TDateTimeHelper.YearsBetween(const ADateTime: TDateTime): Integer;
 begin
-  Result := System.DateUtils.YearsBetween(Self, ADateTime);
+  Result := DateUtils.YearsBetween(Self, ADateTime);
 end;
 
 function TDateTimeHelper.YearsDiffer(const ADateTime: TDateTime): Integer;
@@ -832,6 +861,16 @@ begin
   else
     Result := 0;
 end;
+{$ENDIF}
+
+{$IFDEF FPC}
+initialization
+  DefaultFormatSettings.ShortDateFormat := 'yyyy-mm-dd';
+  DefaultFormatSettings.ShortTimeFormat := 'hh:NN:ss';
+  DefaultFormatSettings.LongDateFormat := 'yyyy-mm-dd';
+  DefaultFormatSettings.LongTimeFormat := 'hh:NN:ss';
+  DefaultFormatSettings.DateSeparator := '-';
+  DefaultFormatSettings.TimeSeparator := ':';
 {$ENDIF}
 
 end.

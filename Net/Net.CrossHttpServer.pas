@@ -9,6 +9,8 @@
 {******************************************************************************}
 unit Net.CrossHttpServer;
 
+{$I zLib.inc}
+
 {
   Linux下需要安装zlib1g-dev开发包
   sudo apt-get install zlib1g-dev
@@ -17,28 +19,29 @@ unit Net.CrossHttpServer;
 interface
 
 uses
-  System.Classes,
-  System.SysUtils,
-  System.StrUtils,
-  System.Math,
-  System.IOUtils,
-  System.Generics.Collections,
-  System.RegularExpressions,
-  System.NetEncoding,
-  System.RegularExpressionsCore,
-  System.RegularExpressionsConsts,
-  System.ZLib,
-  System.Hash,
+  Classes,
+  SysUtils,
+  Math,
+  Generics.Collections,
+  ZLib,
+
   Net.SocketAPI,
   Net.CrossSocket.Base,
   Net.CrossSocket,
   Net.CrossServer,
   Net.CrossHttpParams,
   Net.CrossHttpUtils,
+
+  Utils.StrUtils,
+  Utils.IOUtils,
+  Utils.Hash,
+  Utils.RegEx,
+  Utils.SyncObjs,
+  Utils.ArrayUtils,
   Utils.Logger;
 
 const
-  CROSS_HTTP_SERVER_NAME = 'CrossHttpServer/2.0';
+  CROSS_HTTP_SERVER_NAME = 'CrossHttpServer/3.0';
   MIN_COMPRESS_SIZE = 512;
 
 type
@@ -58,7 +61,7 @@ type
   /// <summary>
   ///   HTTP连接接口
   /// </summary>
-  ICrossHttpConnection = interface(ICrossConnection)
+  ICrossHttpConnection = interface(ICrossServerConnection)
   ['{72E9AC44-958C-4C6F-8769-02EA5EC3E9A8}']
     function GetRequest: ICrossHttpRequest;
     function GetResponse: ICrossHttpResponse;
@@ -169,28 +172,28 @@ type
     ///       TRACE
     ///     </item>
     ///     <item>
-    ///       CONNECT <br />
+    ///       CONNECT
     ///     </item>
     ///     <item>
-    ///       PATCH <br />
+    ///       PATCH
     ///     </item>
     ///     <item>
-    ///       COPY <br />
+    ///       COPY
     ///     </item>
     ///     <item>
-    ///       LINK <br />
+    ///       LINK
     ///     </item>
     ///     <item>
-    ///       UNLINK <br />
+    ///       UNLINK
     ///     </item>
     ///     <item>
-    ///       PURGE <br />
+    ///       PURGE
     ///     </item>
     ///     <item>
-    ///       LOCK <br />
+    ///       LOCK
     ///     </item>
     ///     <item>
-    ///       UNLOCK <br />
+    ///       UNLOCK
     ///     </item>
     ///     <item>
     ///       PROPFIND
@@ -439,11 +442,6 @@ type
   end;
 
   /// <summary>
-  ///   压缩类型
-  /// </summary>
-  TCompressType = (ctGZip, ctDeflate);
-
-  /// <summary>
   ///   提供块数据的匿名函数
   /// </summary>
   TCrossHttpChunkDataFunc = reference to function(const AData: PPointer; const ACount: PNativeInt): Boolean;
@@ -484,7 +482,7 @@ type
     ///   回调函数
     /// </param>
     /// <remarks>
-    ///   本方法实现了一边压缩一边发送数据, 所以可以支持无限大的分块数据的压缩发送, 而不用占用太多的内存和CPU <br /><br />
+    ///   本方法实现了一边压缩一边发送数据, 所以可以支持无限大的分块数据的压缩发送, 而不用占用太多的内存和CPU<br />
     ///   zlib参考手册: <see href="http://www.zlib.net/zlib_how.html" /><br />
     /// </remarks>
     procedure SendZCompress(const AChunkSource: TCrossHttpChunkDataFunc; const ACompressType: TCompressType; const ACallback: TCrossConnectionCallback = nil); overload;
@@ -711,7 +709,7 @@ type
     ///   数据大小
     /// </param>
     /// <param name="ACallback">
-    ///   回调函数 <br />
+    ///   回调函数
     /// </param>
     procedure Send(const ABody; const ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
 
@@ -728,7 +726,7 @@ type
     ///   数据大小
     /// </param>
     /// <param name="ACallback">
-    ///   回调函数 <br />
+    ///   回调函数
     /// </param>
     procedure Send(const ABody: TBytes; const AOffset, ACount: NativeInt; const ACallback: TCrossConnectionCallback = nil); overload;
 
@@ -739,7 +737,7 @@ type
     ///   字节数据
     /// </param>
     /// <param name="ACallback">
-    ///   回调函数 <br />
+    ///   回调函数
     /// </param>
     procedure Send(const ABody: TBytes; const ACallback: TCrossConnectionCallback = nil); overload;
 
@@ -784,7 +782,7 @@ type
     ///   字符串数据
     /// </param>
     /// <param name="ACallback">
-    ///   回调函数 <br />
+    ///   回调函数
     /// </param>
     procedure Send(const ABody: string; const ACallback: TCrossConnectionCallback = nil); overload;
 
@@ -795,7 +793,7 @@ type
     ///   Json字符串数据
     /// </param>
     /// <param name="ACallback">
-    ///   回调函数 <br />
+    ///   回调函数
     /// </param>
     procedure Json(const AJson: string; const ACallback: TCrossConnectionCallback = nil);
 
@@ -959,16 +957,16 @@ type
   ///     Put(APath, ARouter)
   ///   </para>
   ///   <para>
-  ///     Post(APath, ARouter) <br />
+  ///     Post(APath, ARouter)
   ///   </para>
   ///   <para>
-  ///     Delete(APath, ARouter) <br />
+  ///     Delete(APath, ARouter)
   ///   </para>
   ///   <para>
-  ///     All(APath, ARouter) <br />
+  ///     All(APath, ARouter)
   ///   </para>
   ///   <para>
-  ///     其中AMehod和APath都支持正则表达式, ARouter可以是一个对象方法也可以是匿名函数 <br />
+  ///     其中AMehod和APath都支持正则表达式, ARouter可以是一个对象方法也可以是匿名函数
   ///   </para>
   /// </summary>
   /// <remarks>
@@ -1309,7 +1307,7 @@ type
     /// </param>
     /// <param name="APath">
     ///   请求路径, 支持正则表达式, * 表示处理全部请求路径,<br />例如:
-    ///   /path/:param1/:param2(\d+)|/path/:param <br />
+    ///   /path/:param1/:param2(\d+)|/path/:param
     /// </param>
     /// <param name="ARouterProc">
     ///   路由处理匿名函数
@@ -1360,7 +1358,7 @@ type
     /// </summary>
     /// <param name="APath">
     ///   请求路径, 支持正则表达式, * 表示处理全部请求路径,<br />例如:
-    ///   /path/:param1/:param2(\d+)|/path/:param <br />
+    ///   /path/:param1/:param2(\d+)|/path/:param
     /// </param>
     /// <param name="ARouterProc">
     ///   路由处理匿名函数
@@ -1384,7 +1382,7 @@ type
     /// </summary>
     /// <param name="APath">
     ///   请求路径, 支持正则表达式, * 表示处理全部请求路径,<br />例如:
-    ///   /path/:param1/:param2(\d+)|/path/:param <br />
+    ///   /path/:param1/:param2(\d+)|/path/:param
     /// </param>
     /// <param name="ARouterMethod">
     ///   路由处理方法
@@ -1408,7 +1406,7 @@ type
     /// </summary>
     /// <param name="APath">
     ///   请求路径, 支持正则表达式, * 表示处理全部请求路径,<br />例如:
-    ///   /path/:param1/:param2(\d+)|/path/:param <br />
+    ///   /path/:param1/:param2(\d+)|/path/:param
     /// </param>
     /// <param name="ARouterProc">
     ///   路由处理匿名函数
@@ -1432,7 +1430,7 @@ type
     /// </summary>
     /// <param name="APath">
     ///   请求路径, 支持正则表达式, * 表示处理全部请求路径,<br />例如:
-    ///   /path/:param1/:param2(\d+)|/path/:param <br />
+    ///   /path/:param1/:param2(\d+)|/path/:param
     /// </param>
     /// <param name="ARouterMethod">
     ///   路由处理方法
@@ -1480,7 +1478,7 @@ type
     /// </summary>
     /// <param name="APath">
     ///   请求路径, 支持正则表达式, * 表示处理全部请求路径,<br />例如:
-    ///   /path/:param1/:param2(\d+)|/path/:param <br />
+    ///   /path/:param1/:param2(\d+)|/path/:param
     /// </param>
     /// <param name="ARouterMethod">
     ///   路由处理方法
@@ -1504,7 +1502,7 @@ type
     /// </summary>
     /// <param name="APath">
     ///   请求路径, 支持正则表达式, * 表示处理全部请求路径,<br />例如:
-    ///   /path/:param1/:param2(\d+)|/path/:param <br />
+    ///   /path/:param1/:param2(\d+)|/path/:param
     /// </param>
     /// <param name="ARouterProc">
     ///   路由处理匿名函数
@@ -1760,13 +1758,13 @@ type
   private
     FRequest: ICrossHttpRequest;
     FResponse: ICrossHttpResponse;
-
+  protected
     function GetRequest: ICrossHttpRequest;
     function GetResponse: ICrossHttpResponse;
     function GetServer: ICrossHttpServer;
   public
-    constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
-      const AConnectType: TConnectType); override;
+    constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
+      const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback); override;
 
     property Request: ICrossHttpRequest read GetRequest;
     property Response: ICrossHttpResponse read GetResponse;
@@ -1818,10 +1816,18 @@ type
   private
     FParseState: TCrossHttpParseState;
     CR, LF: Integer;
-    FChunkSizeStream: TBytesStream;
+    FChunkSizeStream: TMemoryStream;
     FChunkSize, FChunkLeftSize: Integer;
 
-    FRawRequest: TBytesStream;
+    // 动态解压
+    FZCompressed: Boolean;
+    FZStream: TZStreamRec;
+    FZFlush: Integer;
+    FZResult: Integer;
+    FZOutSize: Integer;
+    FZBuffer: TBytes;
+
+    FRawRequest: TMemoryStream;
     FRawRequestText: string;
     FMethod, FPath, FVersion: string;
     FRawPath, FRawParamsText, FRawPathAndParams: string;
@@ -1947,7 +1953,7 @@ type
     procedure _Send(const AHeaderSource, ABodySource: TCrossHttpChunkDataFunc; const ACallback: TCrossConnectionCallback = nil); overload;
     {$endregion}
 
-    function _CheckCompress(const ABodySize: Int64; var ACompressType: TCompressType): Boolean;
+    function _CheckCompress(const ABodySize: Int64; out ACompressType: TCompressType): Boolean;
     procedure _AdjustOffsetCount(const ABodySize: NativeInt; var AOffset, ACount: NativeInt); overload;
     procedure _AdjustOffsetCount(const ABodySize: Int64; var AOffset, ACount: Int64); overload;
 
@@ -2007,8 +2013,8 @@ type
     FRouterMethod2: TCrossHttpRouterMethod2;
     FMethodPattern, FPathPattern: string;
     FPathParamKeys: TArray<string>;
-    FMethodRegEx, FPathRegEx: TPerlRegEx; // 直接使用TPerlRegEx比使用TRegEx速度快1倍
-    FRegExLock: TObject;
+    FMethodRegEx, FPathRegEx: IRegEx; // 直接使用TPerlRegEx比使用TRegEx速度快1倍
+    FRegExLock: ILock;
 
     function MakeMethodPattern(const AMethod: string): string;
     function MakePathPattern(const APath: string; var AKeys: TArray<string>): string;
@@ -2046,9 +2052,9 @@ type
     FMinCompressSize: Integer;
     FSessionIDCookieName: string;
     FRouters: TCrossHttpRouters;
-    FRoutersLock: TMultiReadExclusiveWriteSynchronizer;
+    FRoutersLock: IReadWriteLock;
     FMiddlewares: TCrossHttpRouters;
-    FMiddlewaresLock: TMultiReadExclusiveWriteSynchronizer;
+    FMiddlewaresLock: IReadWriteLock;
     FSessions: ISessions;
     FOnRequestBegin: TCrossHttpBeforeRequestEvent;
     FOnRequestEnd: TCrossHttpAfterRequestEvent;
@@ -2060,7 +2066,7 @@ type
     FCompressible: Boolean;
 
     function IsValidHttpRequest(const ABuf: Pointer; const ALen: Integer): Boolean;
-    procedure ParseRecvData(const AConnection: ICrossConnection; const ABuf: Pointer; ALen: Integer);
+    procedure ParseRecvData(const AConnection: ICrossConnection; const ABuf: Pointer; const ALen: Integer);
 
     function RegisterRouter(const AMethod, APath: string;
       const ARouterProc: TCrossHttpRouterProc;
@@ -2072,7 +2078,7 @@ type
       const AMiddlewareMethod: TCrossHttpRouterMethod;
       const AMiddlewareProc2: TCrossHttpRouterProc2;
       const AMiddlewareMethod2: TCrossHttpRouterMethod2): TCrossHttpServer;
-  private
+  protected
     function GetStoragePath: string;
     function GetAutoDeleteFiles: Boolean;
     function GetMaxHeaderSize: Int64;
@@ -2105,8 +2111,8 @@ type
     procedure SetOnPostData(const Value: TCrossHttpDataEvent);
     procedure SetOnPostDataEnd(const Value: TCrossHttpConnEvent);
   protected
-    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
-      const AConnectType: TConnectType): ICrossConnection; override;
+    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
+      const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback): ICrossConnection; override;
 
     function CreateRouter(const AMethod, APath: string;
       const ARouterProc: TCrossHttpRouterProc;
@@ -2227,9 +2233,9 @@ implementation
 
 uses
   {$IFDEF MSWINDOWS}
-  Winapi.Windows,
+  Windows,
   {$ENDIF}
-  Utils.RegEx, Utils.Utils,
+  Utils.Utils,
   Net.CrossHttpRouter;
 
 
@@ -2252,9 +2258,10 @@ end;
 { TCrossHttpConnection }
 
 constructor TCrossHttpConnection.Create(const AOwner: TCrossSocketBase;
-  const AClientSocket: THandle; const AConnectType: TConnectType);
+  const AClientSocket: TSocket; const AConnectType: TConnectType;
+  const AConnectCb: TCrossConnectionCallback);
 begin
-  inherited;
+  inherited Create(AOwner, AClientSocket, AConnectType, AConnectCb);
 
   FRequest := TCrossHttpRequest.Create(Self);
   FResponse := TCrossHttpResponse.Create(Self);
@@ -2288,27 +2295,27 @@ begin
   FRouterProc2 := ARouterProc2;
   FRouterMethod2 := ARouterMethod2;
 
-  FMethodRegEx := TPerlRegEx.Create;
-  FMethodRegEx.Options := [preCaseLess];
+  FMethodRegEx := TRegEx.Create;
+  FMethodRegEx.Options := [roIgnoreCase];
 
-  FPathRegEx := TPerlRegEx.Create;
-  FPathRegEx.Options := [preCaseLess];
+  FPathRegEx := TRegEx.Create;
+  FPathRegEx.Options := [roIgnoreCase];
 
-  FRegExLock := TObject.Create;
+  FRegExLock := TLock.Create;
 
   RemakePattern;
 end;
 
 destructor TCrossHttpRouter.Destroy;
 begin
-  TMonitor.Enter(FRegExLock);
-  try
-    FreeAndNil(FMethodRegEx);
-    FreeAndNil(FPathRegEx);
-  finally
-    TMonitor.Exit(FRegExLock);
-  end;
-  FreeAndNil(FRegExLock);
+//  TMonitor.Enter(FRegExLock);
+//  try
+//    FreeAndNil(FMethodRegEx);
+//    FreeAndNil(FPathRegEx);
+//  finally
+//    TMonitor.Exit(FRegExLock);
+//  end;
+//  FreeAndNil(FRegExLock);
 
   inherited;
 end;
@@ -2322,7 +2329,7 @@ begin
   // 通配符*转正则表达式
   LPattern := TRegEx.Replace(LPattern, '(?<!\.)\*', '.*');
 
-  if not LPattern.StartsWith('^') then
+  if not LPattern.StartsWith('^', True) then
     LPattern := '^' + LPattern;
   if not LPattern.EndsWith('$') then
     LPattern := LPattern + '$';
@@ -2405,7 +2412,7 @@ begin
   // 通配符*转正则表达式
   LPattern := TRegEx.Replace(LPattern, '(?<!\.)\*', '.*');
 
-  if not LPattern.StartsWith('^') then
+  if not LPattern.StartsWith('^', True) then
     LPattern := '^' + LPattern;
   if not LPattern.EndsWith('$') then
     LPattern := LPattern + '$';
@@ -2422,20 +2429,20 @@ begin
   FMethodPattern := MakeMethodPattern(FMethod);
   FPathPattern := MakePathPattern(FPath, FPathParamKeys);
 
-  TMonitor.Enter(FRegExLock);
+  FRegExLock.Enter;
   try
-    FMethodRegEx.RegEx := FMethodPattern;
-    FPathRegEx.RegEx := FPathPattern;
+    FMethodRegEx.Pattern := FMethodPattern;
+    FPathRegEx.Pattern := FPathPattern;
   finally
-    TMonitor.Exit(FRegExLock);
+    FRegExLock.Leave;
   end;
 end;
 
 function TCrossHttpRouter.IsMatch(const ARequest: ICrossHttpRequest): Boolean;
   function _IsMatchMethod: Boolean;
   begin
-    // Method中不包括参数, 使用SameText辅助加速
-    if (FMethod = '*') or SameText(ARequest.Method, FMethod) then Exit(True);
+    // Method中不包括参数, 使用TStrUtils.SameText辅助加速
+    if (FMethod = '*') or TStrUtils.SameText(ARequest.Method, FMethod) then Exit(True);
 
     FMethodRegEx.Subject := ARequest.Method;
     Result := FMethodRegEx.Match;
@@ -2445,8 +2452,8 @@ function TCrossHttpRouter.IsMatch(const ARequest: ICrossHttpRequest): Boolean;
   var
     I: Integer;
   begin
-    // Path中不包括参数时, 使用SameText辅助加速
-    if (FPath = '*') or ((Length(FPathParamKeys) = 0) and SameText(ARequest.Path, FPath)) then Exit(True);
+    // Path中不包括参数时, 使用TStrUtils.SameText辅助加速
+    if (FPath = '*') or ((Length(FPathParamKeys) = 0) and TStrUtils.SameText(ARequest.Path, FPath)) then Exit(True);
 
     FPathRegEx.Subject := ARequest.Path;
     Result := FPathRegEx.Match;
@@ -2460,11 +2467,11 @@ function TCrossHttpRouter.IsMatch(const ARequest: ICrossHttpRequest): Boolean;
 begin
   ARequest.Params.Clear;
 
-  TMonitor.Enter(FRegExLock);
+  FRegExLock.Enter;
   try
     Result := _IsMatchMethod and _IsMatchPath;
   finally
-    TMonitor.Exit(FRegExLock);
+    FRegExLock.Leave;
   end;
 end;
 
@@ -2532,10 +2539,10 @@ begin
   inherited Create(AIoThreads, ASsl);
 
   FRouters := TCrossHttpRouters.Create;
-  FRoutersLock := TMultiReadExclusiveWriteSynchronizer.Create;
+  FRoutersLock := TReadWriteLock.Create;
 
   FMiddlewares := TCrossHttpRouters.Create;
-  FMiddlewaresLock := TMultiReadExclusiveWriteSynchronizer.Create;
+  FMiddlewaresLock := TReadWriteLock.Create;
 
   for I := Low(FMethodTags) to High(FMethodTags) do
     FMethodTags[I] := TEncoding.ANSI.GetBytes(HTTP_METHODS[I]);
@@ -2545,14 +2552,15 @@ begin
 
   FCompressible := True;
   FMinCompressSize := MIN_COMPRESS_SIZE;
-  FStoragePath := TPath.Combine(TUtils.AppPath, 'temp') + TPath.DirectorySeparatorChar;
+  FStoragePath := TCrossHttpUtils.CombinePath(TUtils.AppPath, 'temp', PathDelim) + PathDelim;
   FSessionIDCookieName := SESSIONID_COOKIE_NAME;
 end;
 
 function TCrossHttpServer.CreateConnection(const AOwner: TCrossSocketBase;
-  const AClientSocket: THandle; const AConnectType: TConnectType): ICrossConnection;
+  const AClientSocket: TSocket; const AConnectType: TConnectType;
+  const AConnectCb: TCrossConnectionCallback): ICrossConnection;
 begin
-  Result := TCrossHttpConnection.Create(AOwner, AClientSocket, AConnectType);
+  Result := TCrossHttpConnection.Create(AOwner, AClientSocket, AConnectType, AConnectCb);
 end;
 
 function TCrossHttpServer.CreateRouter(const AMethod, APath: string;
@@ -2570,15 +2578,19 @@ destructor TCrossHttpServer.Destroy;
 begin
   Stop;
 
-  FRoutersLock.BeginWrite;
-  FreeAndNil(FRouters);
-  FRoutersLock.EndWrite;
-  FreeAndNil(FRoutersLock);
+  if (FRouters <> nil) then
+  begin
+    FRoutersLock.BeginWrite;
+    FreeAndNil(FRouters);
+    FRoutersLock.EndWrite;
+  end;
 
-  FMiddlewaresLock.BeginWrite;
-  FreeAndNil(FMiddlewares);
-  FMiddlewaresLock.EndWrite;
-  FreeAndNil(FMiddlewaresLock);
+  if (FMiddlewares <> nil) then
+  begin
+    FMiddlewaresLock.BeginWrite;
+    FreeAndNil(FMiddlewares);
+    FMiddlewaresLock.EndWrite;
+  end;
 
   inherited Destroy;
 end;
@@ -2956,18 +2968,19 @@ begin
 end;
 
 procedure TCrossHttpServer.ParseRecvData(const AConnection: ICrossConnection;
-  const ABuf: Pointer; ALen: Integer);
+  const ABuf: Pointer; const ALen: Integer);
 var
   LHttpConnection: ICrossHttpConnection;
   LRequest: TCrossHttpRequest;
   LResponse: TCrossHttpResponse;
-  pch: PByte;
+  LPtr, LPtrEnd: PByte;
   LChunkSize: Integer;
   LLineStr: string;
 
   procedure _Error(AStatusCode: Integer; const AErrMsg: string);
   begin
-    LHttpConnection.Response.SendStatus(AStatusCode, AErrMsg);
+    LHttpConnection.Response.SendStatus(AStatusCode,
+      'Error parsing received data: ' + AErrMsg);
   end;
 
 begin
@@ -2975,18 +2988,22 @@ begin
   LRequest := LHttpConnection.Request as TCrossHttpRequest;
   LResponse := LHttpConnection.Response as TCrossHttpResponse;
 
+  if (LRequest.FParseState = psDone) then
+    LRequest.Reset;
+
   try
     // 在这里解析客户端浏览器发送过来的请求数据
-    pch := ABuf;
-    while (ALen > 0) do
+    LPtr := ABuf;
+    LPtrEnd := LPtr + ALen;
+    while (LPtr < LPtrEnd) do
     begin
       // 使用循环处理粘包, 比递归调用节省资源
-      while (ALen > 0) and (LRequest.FParseState <> psDone) do
+      while (LPtr < LPtrEnd) and (LRequest.FParseState <> psDone) do
       begin
         case LRequest.FParseState of
           psHeader:
             begin
-              case pch^ of
+              case LPtr^ of
                 13{\r}: Inc(LRequest.CR);
                 10{\n}: Inc(LRequest.LF);
               else
@@ -3002,9 +3019,8 @@ begin
               end;
 
               // 写入请求数据
-              LRequest.FRawRequest.Write(pch^, 1);
-              Dec(ALen);
-              Inc(pch);
+              LRequest.FRawRequest.Write(LPtr^, 1);
+              Inc(LPtr);
 
               // 如果不是有效的Http请求直接断开
               // HTTP 请求命令中最长的命令是 PROPFIND, 长度为8个字符
@@ -3043,7 +3059,7 @@ begin
                   if LRequest.IsChunked then
                   begin
                     LRequest.FParseState := psChunkSize;
-                    LRequest.FChunkSizeStream := TBytesStream.Create(nil);
+                    LRequest.FChunkSizeStream := TMemoryStream.Create;
                   end else
                     LRequest.FParseState := psPostData;
 
@@ -3060,18 +3076,18 @@ begin
           // 非Chunked编码的Post数据(有RequestContentLength)
           psPostData:
             begin
-              LChunkSize := Min((LRequest.ContentLength - LRequest.FPostDataSize), ALen);
+              LChunkSize := Min((LRequest.ContentLength - LRequest.FPostDataSize), LPtrEnd - LPtr);
               // Post数据尺寸超标, 直接断开连接
               if (FMaxPostDataSize > 0) and (LRequest.FPostDataSize + LChunkSize > FMaxPostDataSize) then
               begin
                 _Error(400, 'Post data too large.');
                 Exit;
               end;
-              TriggerPostData(LHttpConnection, pch, LChunkSize);
+
+              TriggerPostData(LHttpConnection, LPtr, LChunkSize);
 
               Inc(LRequest.FPostDataSize, LChunkSize);
-              Inc(pch, LChunkSize);
-              Dec(ALen, LChunkSize);
+              Inc(LPtr, LChunkSize);
 
               if (LRequest.FPostDataSize >= LRequest.ContentLength) then
               begin
@@ -3084,16 +3100,15 @@ begin
           // Chunked编码: 块尺寸
           psChunkSize:
             begin
-              case pch^ of
+              case LPtr^ of
                 13{\r}: Inc(LRequest.CR);
                 10{\n}: Inc(LRequest.LF);
               else
                 LRequest.CR := 0;
                 LRequest.LF := 0;
-                LRequest.FChunkSizeStream.Write(pch^, 1);
+                LRequest.FChunkSizeStream.Write(LPtr^, 1);
               end;
-              Dec(ALen);
-              Inc(pch);
+              Inc(LPtr);
 
               if (LRequest.CR = 1) and (LRequest.LF = 1) then
               begin
@@ -3109,19 +3124,18 @@ begin
             begin
               if (LRequest.FChunkLeftSize > 0) then
               begin
-                LChunkSize := Min(LRequest.FChunkLeftSize, ALen);
+                LChunkSize := Min(LRequest.FChunkLeftSize, LPtrEnd - LPtr);
                 // Post数据尺寸超标, 直接断开连接
                 if (FMaxPostDataSize > 0) and (LRequest.FPostDataSize + LChunkSize > FMaxPostDataSize) then
                 begin
                   _Error(400, 'Post data too large.');
                   Exit;
                 end;
-                TriggerPostData(LHttpConnection, pch, LChunkSize);
+                TriggerPostData(LHttpConnection, LPtr, LChunkSize);
 
                 Inc(LRequest.FPostDataSize, LChunkSize);
                 Dec(LRequest.FChunkLeftSize, LChunkSize);
-                Inc(pch, LChunkSize);
-                Dec(ALen, LChunkSize);
+                Inc(LPtr, LChunkSize);
               end;
 
               if (LRequest.FChunkLeftSize <= 0) then
@@ -3135,15 +3149,14 @@ begin
           // Chunked编码: 块结束符\r\n
           psChunkEnd:
             begin
-              case pch^ of
+              case LPtr^ of
                 13{\r}: Inc(LRequest.CR);
                 10{\n}: Inc(LRequest.LF);
               else
                 LRequest.CR := 0;
                 LRequest.LF := 0;
               end;
-              Dec(ALen);
-              Inc(pch);
+              Inc(LPtr);
 
               if (LRequest.CR = 1) and (LRequest.LF = 1) then
               begin
@@ -3169,10 +3182,13 @@ begin
       // 处理请求
       if (LRequest.FParseState = psDone) then
       begin
-        LResponse.Reset;
-        DoOnRequestBegin(LHttpConnection);
-        DoOnRequest(LHttpConnection);
-        LRequest.Reset;
+        try
+          LResponse.Reset;
+          DoOnRequestBegin(LHttpConnection);
+          DoOnRequest(LHttpConnection);
+        finally
+          LRequest.Reset;
+        end;
       end;
     end;
   except
@@ -3300,7 +3316,7 @@ begin
   FRoutersLock.BeginWrite;
   try
     for I := FRouters.Count - 1 downto 0 do
-      if SameText(FRouters[I].Method, AMethod) and SameText(FRouters[I].Path, APath) then
+      if TStrUtils.SameText(FRouters[I].Method, AMethod) and TStrUtils.SameText(FRouters[I].Path, APath) then
         FRouters.Delete(I);
   finally
     FRoutersLock.EndWrite;
@@ -3323,38 +3339,79 @@ procedure TCrossHttpServer.TriggerPostDataBegin(
   const AConnection: ICrossHttpConnection);
 var
   LRequest: TCrossHttpRequest;
+  LCompressType: TCompressType;
   LMultiPart: THttpMultiPartFormData;
   LStream: TStream;
 begin
   LRequest := AConnection.Request as TCrossHttpRequest;
-  case LRequest.BodyType of
-    btMultiPart:
-    begin
-      if (FStoragePath <> '') and not TDirectory.Exists(FStoragePath) then
-        TDirectory.CreateDirectory(FStoragePath);
 
-      LMultiPart := THttpMultiPartFormData.Create;
-      LMultiPart.StoragePath := FStoragePath;
-      LMultiPart.AutoDeleteFiles := FAutoDeleteFiles;
-      LMultiPart.InitWithBoundary(LRequest.RequestBoundary);
-      FreeAndNil(LRequest.FBody);
-      LRequest.FBody := LMultiPart;
+  {$region '初始化压缩库'}
+  LRequest.FZCompressed := False;
+  LCompressType := ctNone;
+
+  // 根据 FContentEncoding(gzip deflate br) 判断使用哪种方式解压
+  // 目前暂时只支持 gzip deflate
+  // 初始化解压库
+  if (LRequest.FContentEncoding <> '') then
+  begin
+    if TStrUtils.SameText(LRequest.FContentEncoding, 'gzip') then
+    begin
+      LCompressType := ctGZip;
+      LRequest.FZCompressed := True;
+    end else
+    if TStrUtils.SameText(LRequest.FContentEncoding, 'deflate') then
+    begin
+      LCompressType := ctDeflate;
+      LRequest.FZCompressed := True;
     end;
 
-    btUrlEncoded:
+    if LRequest.FZCompressed then
     begin
-      LStream := TBytesStream.Create;
-      FreeAndNil(LRequest.FBody);
-      LRequest.FBody := LStream;
-    end;
+      SetLength(LRequest.FZBuffer, ZLIB_BUF_SIZE);
 
-    btBinary:
-    begin
-      LStream := TBytesStream.Create(nil);
-      FreeAndNil(LRequest.FBody);
-      LRequest.FBody := LStream;
+      FillChar(LRequest.FZStream, SizeOf(TZStreamRec), 0);
+      LRequest.FZResult := Z_OK;
+      LRequest.FZFlush := Z_NO_FLUSH;
+
+      if (inflateInit2(LRequest.FZStream, ZLIB_WINDOW_BITS[LCompressType]) <> Z_OK) then
+      begin
+        AConnection.Close;
+        Abort;
+      end;
     end;
   end;
+  {$endregion}
+
+  {$region '创建Body'}
+  case LRequest.BodyType of
+    btMultiPart:
+      begin
+        if (FStoragePath <> '') and not DirectoryExists(FStoragePath) then
+          ForceDirectories(FStoragePath);
+
+        LMultiPart := THttpMultiPartFormData.Create;
+        LMultiPart.StoragePath := FStoragePath;
+        LMultiPart.AutoDeleteFiles := FAutoDeleteFiles;
+        LMultiPart.InitWithBoundary(LRequest.RequestBoundary);
+        FreeAndNil(LRequest.FBody);
+        LRequest.FBody := LMultiPart;
+      end;
+
+    btUrlEncoded:
+      begin
+        LStream := TBytesStream.Create;
+        FreeAndNil(LRequest.FBody);
+        LRequest.FBody := LStream;
+      end;
+
+    btBinary:
+      begin
+        LStream := TBytesStream.Create(nil);
+        FreeAndNil(LRequest.FBody);
+        LRequest.FBody := LStream;
+      end;
+  end;
+  {$endregion}
 
   if Assigned(FOnPostDataBegin) then
     FOnPostDataBegin(Self, AConnection);
@@ -3364,17 +3421,67 @@ procedure TCrossHttpServer.TriggerPostData(const AConnection: ICrossHttpConnecti
   const ABuf: Pointer; const ALen: Integer);
 var
   LRequest: TCrossHttpRequest;
+
+  procedure _WritePostData(const AData: Pointer; const ACount: Integer);
+  begin
+    case LRequest.GetBodyType of
+      btMultiPart: (LRequest.Body as THttpMultiPartFormData).Decode(AData, ACount);
+      btUrlEncoded: (LRequest.Body as TStream).Write(AData^, ACount);
+      btBinary: (LRequest.Body as TStream).Write(AData^, ACount);
+    end;
+
+    if Assigned(FOnPostData) then
+      FOnPostData(Self, AConnection, AData, ACount);
+  end;
+
 begin
   LRequest := AConnection.Request as TCrossHttpRequest;
 
-  case LRequest.GetBodyType of
-    btMultiPart: (LRequest.Body as THttpMultiPartFormData).Decode(ABuf, ALen);
-    btUrlEncoded: (LRequest.Body as TStream).Write(ABuf^, ALen);
-    btBinary: (LRequest.Body as TStream).Write(ABuf^, ALen);
-  end;
+  {$region '解压数据'}
+  // 如果数据是压缩的, 进行解压
+  if LRequest.FZCompressed then
+  begin
+    // 往输入缓冲区填入新数据
+    // 对于使用 inflate 函数解压缩数据, 通常不需要使用 Z_FINISH 进行收尾。
+    // Z_FINISH 选项通常在压缩时使用, 以表示已经完成了压缩的数据块。
+    // 在解压缩过程中, inflate 函数会自动处理数据流的结束。
+    // 当输入数据流中的所有数据都被解压缩时, inflate 函数会返回 Z_STREAM_END,
+    // 这表示数据流已经结束，不需要额外的处理。
+    LRequest.FZStream.avail_in := ALen;
+    LRequest.FZStream.next_in := ABuf;
+    LRequest.FZFlush := Z_NO_FLUSH;
 
-  if Assigned(FOnPostData) then
-    FOnPostData(Self, AConnection, ABuf, ALen);
+    repeat
+      // 返回 Z_STREAM_END 表示所有数据处理完毕
+      if (LRequest.FZResult = Z_STREAM_END) then Break;
+
+      // 解压数据输出缓冲区
+      LRequest.FZStream.avail_out := ZLIB_BUF_SIZE;
+      LRequest.FZStream.next_out := @LRequest.FZBuffer[0];
+
+      // 进行解压处理
+      // 输入缓冲区数据可以大于输出缓冲区
+      // 这种情况可以多次调用 inflate 分批解压,
+      // 直到 avail_in=0  表示当前输入缓冲区数据已解压完毕
+      LRequest.FZResult := inflate(LRequest.FZStream, LRequest.FZFlush);
+
+      // 解压出错之后直接结束
+      if (LRequest.FZResult < 0) then
+      begin
+        LRequest.FZOutSize := 0;
+        Break;
+      end;
+
+      // 已解压完成的数据大小
+      LRequest.FZOutSize := ZLIB_BUF_SIZE - LRequest.FZStream.avail_out;
+
+      // 保存已解压的数据
+      if (LRequest.FZOutSize > 0) then
+        _WritePostData(@LRequest.FZBuffer[0], LRequest.FZOutSize);
+    until ((LRequest.FZResult = Z_STREAM_END) or (LRequest.FZStream.avail_in = 0));
+  end else
+  {$endregion}
+    _WritePostData(ABuf, ALen);
 end;
 
 procedure TCrossHttpServer.TriggerPostDataEnd(
@@ -3386,22 +3493,31 @@ var
 begin
   LRequest := AConnection.Request as TCrossHttpRequest;
 
+  if LRequest.FZCompressed then
+    inflateEnd(LRequest.FZStream);
+
   case LRequest.GetBodyType of
     btUrlEncoded:
-    begin
-      SetString(LUrlEncodedStr,
-        MarshaledAString((LRequest.Body as TBytesStream).Memory),
-        (LRequest.Body as TBytesStream).Size);
-      LUrlEncodedBody := THttpUrlParams.Create;
-      LUrlEncodedBody.Decode(LUrlEncodedStr);
-      FreeAndNil(LRequest.FBody);
-      LRequest.FBody := LUrlEncodedBody;
-    end;
+      begin
+        SetString(LUrlEncodedStr,
+          MarshaledAString((LRequest.Body as TBytesStream).Memory),
+          (LRequest.Body as TBytesStream).Size);
+        LUrlEncodedBody := THttpUrlParams.Create;
+        if LUrlEncodedBody.Decode(LUrlEncodedStr) then
+        begin
+          FreeAndNil(LRequest.FBody);
+          LRequest.FBody := LUrlEncodedBody;
+        end else
+        begin
+          FreeAndNil(LUrlEncodedBody);
+          LRequest.FBodyType := btBinary;
+        end;
+      end;
 
     btBinary:
-    begin
-      (LRequest.Body as TStream).Position := 0;
-    end;
+      begin
+        (LRequest.Body as TStream).Position := 0;
+      end;
   end;
 
   if Assigned(FOnPostDataEnd) then
@@ -3514,7 +3630,7 @@ constructor TCrossHttpRequest.Create(const AConnection: TCrossHttpConnection);
 begin
   FConnection := AConnection;
 
-  FRawRequest := TBytesStream.Create(nil);
+  FRawRequest := TMemoryStream.Create;
   FHeader := THttpHeader.Create;
   FCookies := TRequestCookies.Create;
   FParams := THttpUrlParams.Create;
@@ -3621,17 +3737,17 @@ end;
 
 function TCrossHttpRequest.GetIsChunked: Boolean;
 begin
-  Result := SameText(FTransferEncoding, 'chunked');
+  Result := TStrUtils.SameText(FTransferEncoding, 'chunked');
 end;
 
 function TCrossHttpRequest.GetIsMultiPartFormData: Boolean;
 begin
-  Result := SameText(FContentType, 'multipart/form-data');
+  Result := TStrUtils.SameText(FContentType, 'multipart/form-data');
 end;
 
 function TCrossHttpRequest.GetIsUrlEncodedFormData: Boolean;
 begin
-  Result := SameText(FContentType, 'application/x-www-form-urlencoded');
+  Result := TStrUtils.SameText(FContentType, 'application/x-www-form-urlencoded');
 end;
 
 function TCrossHttpRequest.GetKeepAlive: Boolean;
@@ -3761,7 +3877,7 @@ begin
     FRawPath := FRawPathAndParams.Substring(0, J);
     FRawParamsText := FRawPathAndParams.Substring(J + 1);
   end;
-  FPath := TNetEncoding.URL.Decode(FRawPath);
+  FPath := TCrossHttpUtils.UrlDecode(FRawPath);
 
   FQuery.Decode(FRawParamsText);
 
@@ -3774,10 +3890,7 @@ begin
     FHttpVerNum := 11;
   FKeepAlive := (FHttpVerNum = 11);
 
-  // 解析Cookies
-  FCookies.Decode(FHeader['Cookie'], True);
-
-  FContentType := FHeader['Content-Type'];
+  FContentType := FHeader[HEADER_CONTENT_TYPE];
   FRequestBoundary := '';
   J := FContentType.IndexOf(';');
   if (J >= 0) then
@@ -3789,13 +3902,13 @@ begin
     FContentType := FContentType.Substring(0, J);
   end;
 
-  FContentLength := StrToInt64Def(FHeader['Content-Length'], -1);
+  FContentLength := StrToInt64Def(FHeader[HEADER_CONTENT_LENGTH], -1);
 
   // IPv4: 192.168.1.100:8080
   //       192.168.1.100
   // IPv6: [fc00::20:80:5:2]:8080
   //       [fc00::20:80:5:2]
-  FRequestHost := FHeader['Host'];
+  FRequestHost := FHeader[HEADER_HOST];
   J := FRequestHost.IndexOf(']');
   if (J < 0) then
     J := 0;
@@ -3810,28 +3923,31 @@ begin
     FHostPort := GetConnection.Server.Port;
   end;
 
-  FRequestConnection := FHeader['Connection'];
+  FRequestConnection := FHeader[HEADER_CONNECTION];
   // HTTP/1.0 默认KeepAlive=False，只有显示指定了Connection: keep-alive才认为KeepAlive=True
   // HTTP/1.1 默认KeepAlive=True，只有显示指定了Connection: close才认为KeepAlive=False
   if FHttpVerNum = 10 then
-    FKeepAlive := SameText(FRequestConnection, 'keep-alive')
-  else if SameText(FRequestConnection, 'close') then
+    FKeepAlive := TStrUtils.SameText(FRequestConnection, 'keep-alive')
+  else if TStrUtils.SameText(FRequestConnection, 'close') then
     FKeepAlive := False;
 
-  FTransferEncoding := FHeader['Transfer-Encoding'];
-  FContentEncoding := FHeader['Content-Encoding'];
-  FAccept := FHeader['Accept'];
-  FReferer := FHeader['Referer'];
-  FAcceptLanguage := FHeader['Accept-Language'];
-  FAcceptEncoding := FHeader['Accept-Encoding'];
-  FUserAgent := FHeader['User-Agent'];
-  FAuthorization := FHeader['Authorization'];
-  FRequestCookies := FHeader['Cookie'];
-  FIfModifiedSince := TCrossHttpUtils.RFC1123_StrToDate(FHeader['If-Modified-Since']);
-  FIfNoneMatch := FHeader['If-None-Match'];
-  FRange := FHeader['Range'];
-  FIfRange := FHeader['If-Range'];
-  FXForwardedFor:= FHeader['X-Forwarded-For'];
+  FTransferEncoding := FHeader[HEADER_TRANSFER_ENCODING];
+  FContentEncoding := FHeader[HEADER_CONTENT_ENCODING];
+  FAccept := FHeader[HEADER_ACCEPT];
+  FReferer := FHeader[HEADER_REFERER];
+  FAcceptLanguage := FHeader[HEADER_ACCEPT_LANGUAGE];
+  FAcceptEncoding := FHeader[HEADER_ACCEPT_ENCODING];
+  FUserAgent := FHeader[HEADER_USER_AGENT];
+  FAuthorization := FHeader[HEADER_AUTHORIZATION];
+  FRequestCookies := FHeader[HEADER_COOKIE];
+  FIfModifiedSince := TCrossHttpUtils.RFC1123_StrToDate(FHeader[HEADER_IF_MODIFIED_SINCE]);
+  FIfNoneMatch := FHeader[HEADER_IF_NONE_MATCH];
+  FRange := FHeader[HEADER_RANGE];
+  FIfRange := FHeader[HEADER_IF_RANGE];
+  FXForwardedFor:= FHeader[HEADER_X_FORWARDED_FOR];
+
+  // 解析Cookies
+  FCookies.Decode(FRequestCookies, True);
 
   if IsMultiPartFormData then
     FBodyType := btMultiPart
@@ -3886,7 +4002,7 @@ end;
 
 function TCrossHttpResponse.GetContentType: string;
 begin
-  Result := FHeader['Content-Type'];
+  Result := FHeader[HEADER_CONTENT_TYPE];
 end;
 
 function TCrossHttpResponse.GetCookies: TResponseCookies;
@@ -3901,7 +4017,7 @@ end;
 
 function TCrossHttpResponse.GetLocation: string;
 begin
-  Result := FHeader['Location'];
+  Result := FHeader[HEADER_LOCATION];
 end;
 
 function TCrossHttpResponse.GetRequest: ICrossHttpRequest;
@@ -3944,8 +4060,8 @@ procedure TCrossHttpResponse.Attachment(const AFileName: string);
 begin
   if (GetContentType = '') then
     SetContentType(TCrossHttpUtils.GetFileMIMEType(AFileName));
-  FHeader['Content-Disposition'] := 'attachment; filename="' +
-    TNetEncoding.URL.Encode(TPath.GetFileName(AFileName)) + '"';
+  FHeader[HEADER_CONTENT_DISPOSITION] := 'attachment; filename="' +
+    TCrossHttpUtils.UrlEncode(ExtractFileName(AFileName)) + '"';
 end;
 
 procedure TCrossHttpResponse.Send(const ABody: Pointer; const ACount: NativeInt;
@@ -4042,60 +4158,85 @@ const
   CHUNK_END: array [0..6] of Byte = (13, 10, 48, 13, 10, 13, 10); // \r\n0\r\n\r\n
 var
   LHeaderBytes, LChunkHeader: TBytes;
-  LIsFirstChunk: Boolean;
+  LChunked, LIsFirstChunk: Boolean;
   LChunkState: TChunkState;
   LChunkData: Pointer;
   LChunkSize: NativeInt;
 begin
+  // 先取出第一个数据块
+  // 如果有数据才需要使用 chunked 方式发送数据
+  if Assigned(AChunkSource) then
+  begin
+    LChunked := AChunkSource(@LChunkData, @LChunkSize)
+      and (LChunkData <> nil)
+      and (LChunkSize > 0);
+  end else
+    LChunked := False;
+
   LIsFirstChunk := True;
   LChunkState := csHead;
 
   _Send(
     // HEADER
-    function(const AData: PPointer; const ACount: PNativeInt): Boolean
+    function(const AData: PPointer; const ADataSize: PNativeInt): Boolean
     begin
-      LHeaderBytes := _CreateHeader(0, True);
+      LHeaderBytes := _CreateHeader(0, LChunked);
 
       AData^ := @LHeaderBytes[0];
-      ACount^ := Length(LHeaderBytes);
+      ADataSize^ := Length(LHeaderBytes);
 
-      Result := (ACount^ > 0);
+      Result := (ADataSize^ > 0);
     end,
     // BODY
-    function(const AData: PPointer; const ACount: PNativeInt): Boolean
+    function(const AData: PPointer; const ADataSize: PNativeInt): Boolean
     begin
+      if not LChunked then Exit(False);
+
       case LChunkState of
         csHead:
           begin
-            LChunkData := nil;
-            LChunkSize := 0;
-            if not Assigned(AChunkSource)
-              or not AChunkSource(@LChunkData, @LChunkSize)
-              or (LChunkData = nil)
-              or (LChunkSize <= 0) then
+            if LIsFirstChunk then
             begin
-              LChunkState := csDone;
+              LIsFirstChunk := False;
+              LChunkHeader := [];
+            end else
+            begin
+              LChunkData := nil;
+              LChunkSize := 0;
+              if not Assigned(AChunkSource)
+                or not AChunkSource(@LChunkData, @LChunkSize)
+                or (LChunkData = nil)
+                or (LChunkSize <= 0) then
+              begin
+                LChunkState := csDone;
 
-              AData^ := @CHUNK_END[0];
-              ACount^ := Length(CHUNK_END);
+                AData^ := @CHUNK_END[0];
+                ADataSize^ := Length(CHUNK_END);
 
-              Result := (ACount^ > 0);
+                Result := (ADataSize^ > 0);
 
-              Exit;
+                Exit;
+              end;
+
+              LChunkHeader := [13, 10];
             end;
 
-            LChunkHeader := TEncoding.ANSI.GetBytes(IntToHex(LChunkSize, 0)) + [13, 10];
-            if LIsFirstChunk then
-              LIsFirstChunk := False
-            else
-              LChunkHeader := [13, 10] + LChunkHeader;
+            // FPC编译器在Linux下有BUG(FPC 3.3.1)
+            // 无法将函数返回的字节数组直接与其它字节数组使用加号拼接
+            // 实际上使用加号拼接字节数组还有其它各种异常
+            // 所以改用我的TArrayUtils.Concat进行拼接
+            LChunkHeader := TArrayUtils<Byte>.Concat([
+              LChunkHeader,
+              TEncoding.ANSI.GetBytes(IntToHex(LChunkSize, 0)),
+              [13, 10]
+            ]);
 
             LChunkState := csBody;
 
             AData^ := @LChunkHeader[0];
-            ACount^ := Length(LChunkHeader);
+            ADataSize^ := Length(LChunkHeader);
 
-            Result := (ACount^ > 0);
+            Result := (ADataSize^ > 0);
           end;
 
         csBody:
@@ -4103,9 +4244,9 @@ begin
             LChunkState := csHead;
 
             AData^ := LChunkData;
-            ACount^ := LChunkSize;
+            ADataSize^ := LChunkSize;
 
-            Result := (ACount^ > 0);
+            Result := (ADataSize^ > 0);
           end;
 
         csDone:
@@ -4138,9 +4279,9 @@ var
   LRangeStrArr: TArray<string>;
   LRangeBegin, LRangeEnd, LOffset, LCount: Int64;
 begin
-  if not TFile.Exists(AFileName) then
+  if not FileExists(AFileName) then
   begin
-    FHeader.Remove('Content-Disposition');
+    FHeader.Remove(HEADER_CONTENT_DISPOSITION);
     SendStatus(404, ACallback);
     Exit;
   end;
@@ -4153,7 +4294,7 @@ begin
     // 当请求头中的时间戳与文件时间一致时, 浏览器会自动从本地加载文件数据
     // 服务端无需发送文件数据
     LRequest := GetRequest as TCrossHttpRequest;
-    LLastModified := TFile.GetLastWriteTime(AFileName);
+    LLastModified := TFileUtils.GetLastWriteTime(AFileName);
 
     if (LRequest.IfModifiedSince > 0) and (LRequest.IfModifiedSince >= (LLastModified - (1 / SecsPerDay))) then
     begin
@@ -4172,23 +4313,23 @@ begin
       Exit;
     end;
 
-    LStream := TFileStream.Create(AFileName, fmOpenRead or fmShareDenyNone);
+    LStream := TFileUtils.OpenRead(AFileName);
   except
     on e: Exception do
     begin
-      FHeader.Remove('Content-Disposition');
-      SendStatus(404, Format('%s, %s', [e.ClassName, e.Message]), ACallback);
+      FHeader.Remove(HEADER_CONTENT_DISPOSITION);
+      SendStatus(404, TStrUtils.Format('%s, %s', [e.ClassName, e.Message]), ACallback);
       Exit;
     end;
   end;
 
   // 在响应头中加入文件时间戳
   // 浏览器会根据该时间戳决定是否从本地缓存中直接加载数据
-  FHeader['Last-Modified'] := LLastModifiedStr;
-  FHeader['ETag'] := LETag;
+  FHeader[HEADER_LAST_MODIFIED] := LLastModifiedStr;
+  FHeader[HEADER_ETAG] := LETag;
 
   // 告诉浏览器支持分块传输
-  FHeader['Accept-Ranges'] := 'bytes';
+  FHeader[HEADER_ACCEPT_RANGES] := 'bytes';
 
   // 收到分块取数据头
   // Range: bytes=[x]-[y]
@@ -4224,7 +4365,7 @@ begin
 
     // 返回分块信息
     // Content-Range: bytes [x]-[y]/file-size
-    FHeader['Content-Range'] := Format('bytes %d-%d/%d',
+    FHeader[HEADER_CONTENT_RANGE] := TStrUtils.Format('bytes %d-%d/%d',
       [LRangeBegin, LRangeEnd, LStream.Size]);
 
     // 断点续传需要返回206状态码, 而不是200
@@ -4247,12 +4388,12 @@ end;
 
 procedure TCrossHttpResponse.SetContentType(const Value: string);
 begin
-  FHeader['Content-Type'] := Value;
+  FHeader[HEADER_CONTENT_TYPE] := Value;
 end;
 
 procedure TCrossHttpResponse.SetLocation(const Value: string);
 begin
-  FHeader['Location'] := Value;
+  FHeader[HEADER_LOCATION] := Value;
 end;
 
 procedure TCrossHttpResponse.SetStatusCode(Value: Integer);
@@ -4319,7 +4460,7 @@ begin
 end;
 
 function TCrossHttpResponse._CheckCompress(const ABodySize: Int64;
-  var ACompressType: TCompressType): Boolean;
+  out ACompressType: TCompressType): Boolean;
 var
   LContType, LRequestAcceptEncoding: string;
   LServer: ICrossHttpServer;
@@ -4351,6 +4492,7 @@ begin
     end;
   end;
 
+  ACompressType := ctNone;
   Result := False;
 end;
 
@@ -4362,27 +4504,27 @@ var
 begin
   if (GetContentType = '') then
     SetContentType(TMediaType.APPLICATION_OCTET_STREAM);
-  if (FHeader['Connection'] = '') then
+  if (FHeader[HEADER_CONNECTION] = '') then
   begin
     if FRequest.KeepAlive then
-      FHeader['Connection'] := 'keep-alive'
+      FHeader[HEADER_CONNECTION] := 'keep-alive'
     else
-      FHeader['Connection'] := 'close';
+      FHeader[HEADER_CONNECTION] := 'close';
   end;
 
   if AChunked then
-    FHeader['Transfer-Encoding'] := 'chunked'
-  else
-    FHeader['Content-Length'] := ABodySize.ToString;
+    FHeader[HEADER_TRANSFER_ENCODING] := 'chunked'
+  else if (ABodySize > 0) then
+    FHeader[HEADER_CONTENT_LENGTH] := ABodySize.ToString;
 
-  if (FHeader['Server'] = '') then
-    FHeader['Server'] := CROSS_HTTP_SERVER_NAME;
+  if (FHeader[HEADER_CROSS_HTTP_SERVER] = '') then
+    FHeader[HEADER_CROSS_HTTP_SERVER] := CROSS_HTTP_SERVER_NAME;
 
   LHeaderStr := FRequest.Version + ' ' + FStatusCode.ToString + ' ' +
     TCrossHttpUtils.GetHttpStatusText(FStatusCode) + #13#10;
 
   for LCookie in FCookies do
-    LHeaderStr := LHeaderStr + 'Set-Cookie: ' + LCookie.Encode + #13#10;
+    LHeaderStr := LHeaderStr + HEADER_SETCOOKIE + ': ' + LCookie.Encode + #13#10;
 
   LHeaderStr := LHeaderStr + FHeader.Encode;
 
@@ -4416,7 +4558,7 @@ begin
 
         if Assigned(LHttpConnection)
           and Assigned(LHttpConnection.Server) then
-          TCrossHttpServer(LHttpConnection.Server).DoOnRequestEnd(LHttpConnection, False);
+          (LHttpConnection.Server as TCrossHttpServer).DoOnRequestEnd(LHttpConnection, False);
 
         LHttpConnection.Close;
 
@@ -4437,7 +4579,7 @@ begin
 
         if Assigned(LHttpConnection)
           and Assigned(LHttpConnection.Server) then
-          TCrossHttpServer(LHttpConnection.Server).DoOnRequestEnd(LHttpConnection, True);
+          (LHttpConnection.Server as TCrossHttpServer).DoOnRequestEnd(LHttpConnection, True);
 
         if not LKeepAlive
           or (LStatusCode >= 400{如果发送的是出错状态码, 则发送完成之后断开连接}) then
@@ -4479,6 +4621,10 @@ end;
 
 procedure TCrossHttpResponse.SendNoCompress(const ABody: Pointer;
   const ACount: NativeInt; const ACallback: TCrossConnectionCallback);
+{
+HTTP头\r\n\r\n
+内容
+}
 var
   P: PByte;
   LSize: NativeInt;
@@ -4575,7 +4721,7 @@ begin
 
   if (ABody is TCustomMemoryStream) then
   begin
-    SendNoCompress(Pointer(IntPtr(TCustomMemoryStream(ABody).Memory) + LOffset)^, LCount, ACallback);
+    SendNoCompress((PByte(TCustomMemoryStream(ABody).Memory) + LOffset)^, LCount, ACallback);
     Exit;
   end;
 
@@ -4659,9 +4805,6 @@ procedure TCrossHttpResponse.SendZCompress(
 
   zlib参考手册: http://www.zlib.net/zlib_how.html
 }
-const
-  WINDOW_BITS: array [TCompressType] of Integer = (15 + 16{gzip}, 15{deflate});
-  CONTENT_ENCODING: array [TCompressType] of string = ('gzip', 'deflate');
 var
   LZStream: TZStreamRec;
   LZFlush: Integer;
@@ -4669,11 +4812,17 @@ var
   LOutSize: Integer;
   LBuffer: TBytes;
 begin
+  if (ACompressType = ctNone) then
+  begin
+    SendNoCompress(AChunkSource, ACallback);
+    Exit;
+  end;
+
   // 返回压缩方式
-  FHeader['Content-Encoding'] := CONTENT_ENCODING[ACompressType];
+  FHeader[HEADER_CONTENT_ENCODING] := ZLIB_CONTENT_ENCODING[ACompressType];
 
   // 明确告知缓存服务器按照 Accept-Encoding 字段的内容, 分别缓存不同的版本
-  FHeader['Vary'] := 'Accept-Encoding';
+  FHeader[HEADER_VARY] := HEADER_ACCEPT_ENCODING;
 
   SetLength(LBuffer, SND_BUF_SIZE);
 
@@ -4682,7 +4831,7 @@ begin
   LZFlush := Z_NO_FLUSH;
 
   if (deflateInit2(LZStream, Z_DEFAULT_COMPRESSION,
-    Z_DEFLATED, WINDOW_BITS[ACompressType], 8, Z_DEFAULT_STRATEGY) <> Z_OK) then
+    Z_DEFLATED, ZLIB_WINDOW_BITS[ACompressType], 8, Z_DEFAULT_STRATEGY) <> Z_OK) then
   begin
     if Assigned(ACallback) then
       ACallback(GetConnection, False);
@@ -4851,7 +5000,7 @@ begin
 
   if (ABody is TCustomMemoryStream) then
   begin
-    SendZCompress(Pointer(IntPtr(TCustomMemoryStream(ABody).Memory) + LOffset)^, LCount, ACompressType, ACallback);
+    SendZCompress((PByte(TCustomMemoryStream(ABody).Memory) + LOffset)^, LCount, ACompressType, ACallback);
     Exit;
   end;
 

@@ -1,4 +1,4 @@
-{******************************************************************************}
+﻿{******************************************************************************}
 {                                                                              }
 {       Delphi cross platform socket library                                   }
 {                                                                              }
@@ -9,10 +9,21 @@
 {******************************************************************************}
 unit Linux.epoll;
 
+{$I zLib.inc}
+
 interface
 
 uses
-  Posix.Base, Posix.Signal;
+  {$IFDEF DELPHI}
+  Posix.Base,
+  Posix.StdDef,
+  Posix.SysTypes,
+  Posix.Signal
+  {$ELSE}
+  BaseUnix,
+  Unix
+  {$ENDIF}
+  ;
 
 const
   EPOLLIN  = $01; { The associated file is available for read(2) operations. }
@@ -47,25 +58,28 @@ type
   TEPoll_Event =  Epoll_Event;
   PEpoll_Event = ^Epoll_Event;
 
+{$IF DEFINED(FPC)}
+{$LINKLIB c}
+{$ENDIF}
+
 { open an epoll file descriptor }
 function epoll_create(size: Integer): Integer; cdecl;
-  external libc name _PU + 'epoll_create';
-  {$EXTERNALSYM epoll_create}
+  external {$IFDEF DELPHI}libc name 'epoll_create'{$ENDIF};
 
 { control interface for an epoll descriptor }
 function epoll_ctl(epfd, op, fd: Integer; event: pepoll_event): Integer; cdecl;
-  external libc name _PU + 'epoll_ctl';
-  {$EXTERNALSYM epoll_ctl}
+  external {$IFDEF DELPHI}libc name 'epoll_ctl'{$ENDIF};
 
 { wait for an I/O event on an epoll file descriptor }
 function epoll_wait(epfd: Integer; events: pepoll_event; maxevents, timeout: Integer): Integer; cdecl;
-  external libc name _PU + 'epoll_wait';
-  {$EXTERNALSYM epoll_wait}
+  external {$IFDEF DELPHI}libc name 'epoll_wait'{$ENDIF};
 
 { create a file descriptor for event notification }
 function eventfd(initval: Cardinal; flags: Integer): Integer; cdecl;
-  external libc name _PU + 'eventfd';
-  {$EXTERNALSYM eventfd}
+  external {$IFDEF DELPHI}libc name 'eventfd'{$ENDIF};
+
+function __write(Handle: Integer; Buffer: Pointer; Count: size_t): ssize_t; cdecl;
+  external {$IFDEF DELPHI}libc name 'write'{$ENDIF};
 
 implementation
 

@@ -9,29 +9,51 @@
 {******************************************************************************}
 unit Net.CrossSocket.Kqueue;
 
+{$I zLib.inc}
+
 interface
 
 uses
-  System.SysUtils,
-  System.Classes,
-  System.Generics.Collections,
+  SysUtils,
+  Classes,
+  Generics.Collections,
+
+  {$IFDEF DELPHI}
   Posix.SysSocket,
   Posix.NetinetIn,
   Posix.UniStd,
   Posix.NetDB,
   Posix.Pthread,
   Posix.Errno,
+  {$ELSE}
+  baseunix,
+  unix,
+  sockets,
+  netdb,
+  DTF.RTL,
+  {$ENDIF}
+
   BSD.kqueue,
+
   Net.SocketAPI,
-  Net.CrossSocket.Base;
+  Net.CrossSocket.Base,
+  Utils.SyncObjs;
 
 type
+  {$IFDEF FPC}
+  TPipeDescriptors = {packed} record
+    ReadDes: Integer;
+    WriteDes: Integer;
+  end;
+  PPipeDescriptors = ^TPipeDescriptors;
+  {$ENDIF}
+
   TIoEvent = (ieRead, ieWrite);
   TIoEvents = set of TIoEvent;
 
   TKqueueListen = class(TCrossListenBase)
   private
-    FLock: TObject;
+    FLock: ILock;
     FIoEvents: TIoEvents;
 
     procedure _Lock; inline;
@@ -40,9 +62,8 @@ type
     function _ReadEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
   public
-    constructor Create(const AOwner: TCrossSocketBase; const AListenSocket: THandle;
+    constructor Create(const AOwner: TCrossSocketBase; const AListenSocket: TSocket;
       const AFamily, ASockType, AProtocol: Integer); override;
-    destructor Destroy; override;
   end;
 
   PSendItem = ^TSendItem;
@@ -59,10 +80,9 @@ type
 
   TKqueueConnection = class(TCrossConnectionBase)
   private
-    FLock: TObject;
+    FLock: ILock;
     FSendQueue: TSendQueue;
     FIoEvents: TIoEvents;
-    FConnectCallback: TCrossConnectionCallback; // 用于 Connect 回调
 
     procedure _Lock; inline;
     procedure _Unlock; inline;
@@ -71,8 +91,8 @@ type
     function _WriteEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
   public
-    constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
-      const AConnectType: TConnectType); override;
+    constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
+      const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback); override;
     destructor Destroy; override;
   end;
 
@@ -121,10 +141,10 @@ type
   private class threadvar
     FEventList: array [0..MAX_EVENT_COUNT-1] of TKEvent;
   private
-    FKqueueHandle: THandle;
+    FKqueueHandle: Integer;
     FIoThreads: TArray<TIoEventThread>;
     FIdleHandle: THandle;
-    FIdleLock: TObject;
+    FIdleLock: ILock;
     FStopHandle: TPipeDescriptors;
 
     // 利用 pipe 唤醒并退出IO线程
@@ -138,16 +158,16 @@ type
     // 在向一个已经关闭的套接字发送数据时系统会直接抛出EPIPE异常导致程序非正常退出
     // LINUX下可以在send时带上MSG_NOSIGNAL参数就能避免这种情况的发生
     // OSX中可以通过设置套接字的SO_NOSIGPIPE参数达到同样的目的
-    procedure _SetNoSigPipe(ASocket: THandle); inline;
+    procedure _SetNoSigPipe(ASocket: TSocket); inline;
 
     procedure _HandleAccept(const AListen: ICrossListen);
     procedure _HandleConnect(const AConnection: ICrossConnection);
     procedure _HandleRead(const AConnection: ICrossConnection);
     procedure _HandleWrite(const AConnection: ICrossConnection);
   protected
-    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
-      const AConnectType: TConnectType): ICrossConnection; override;
-    function CreateListen(const AOwner: TCrossSocketBase; const AListenSocket: THandle;
+    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
+      const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback): ICrossConnection; override;
+    function CreateListen(const AOwner: TCrossSocketBase; const AListenSocket: TSocket;
       const AFamily, ASockType, AProtocol: Integer): ICrossListen; override;
 
     procedure StartLoop; override;
@@ -172,26 +192,26 @@ implementation
 
 {$I Net.Posix.inc}
 
+{$IFDEF FPC}
+function pipe(var PipeDes: TPipeDescriptors): Integer; cdecl; external 'c' name 'pipe';
+function __read(Handle: Integer; Buffer: Pointer; Count: size_t): ssize_t; cdecl; external 'c' name 'read';
+function __write(Handle: Integer; Buffer: Pointer; Count: size_t): ssize_t; cdecl; external 'c' name 'write';
+function __close(Handle: Integer): Integer; cdecl; external 'c' name 'close';
+{$ENDIF}
+
 { TKqueueListen }
 
 constructor TKqueueListen.Create(const AOwner: TCrossSocketBase;
-  const AListenSocket: THandle; const AFamily, ASockType, AProtocol: Integer);
+  const AListenSocket: TSocket; const AFamily, ASockType, AProtocol: Integer);
 begin
   inherited;
 
-  FLock := TObject.Create;
-end;
-
-destructor TKqueueListen.Destroy;
-begin
-  FreeAndNil(FLock);
-
-  inherited;
+  FLock := TLock.Create;
 end;
 
 procedure TKqueueListen._Lock;
 begin
-  System.TMonitor.Enter(FLock);
+  FLock.Enter;
 end;
 
 function TKqueueListen._ReadEnabled: Boolean;
@@ -201,7 +221,7 @@ end;
 
 procedure TKqueueListen._Unlock;
 begin
-  System.TMonitor.Exit(FLock);
+  FLock.Leave;
 end;
 
 function TKqueueListen._UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
@@ -257,12 +277,13 @@ end;
 { TKqueueConnection }
 
 constructor TKqueueConnection.Create(const AOwner: TCrossSocketBase;
-  const AClientSocket: THandle; const AConnectType: TConnectType);
+  const AClientSocket: TSocket; const AConnectType: TConnectType;
+  const AConnectCb: TCrossConnectionCallback);
 begin
-  inherited;
+  inherited Create(AOwner, AClientSocket, AConnectType, AConnectCb);
 
   FSendQueue := TSendQueue.Create;
-  FLock := TObject.Create;
+  FLock := TLock.Create;
 end;
 
 destructor TKqueueConnection.Destroy;
@@ -274,15 +295,6 @@ begin
 
   _Lock;
   try
-    // 连接释放时, 调用连接回调, 告知连接失败
-    // 连接成功后 FConnectCallback 会被置为 nil,
-    // 所以如果这里 FConnectCallback 不等于 nil, 则表示连接释放时仍未连接成功
-    if Assigned(FConnectCallback) then
-    begin
-      FConnectCallback(LConnection, False);
-      FConnectCallback := nil;
-    end;
-
     // 连接释放时, 调用所有发送队列的回调, 告知发送失败
     if (FSendQueue.Count > 0) then
     begin
@@ -298,14 +310,12 @@ begin
     _Unlock;
   end;
 
-  FreeAndNil(FLock);
-
   inherited;
 end;
 
 procedure TKqueueConnection._Lock;
 begin
-  System.TMonitor.Enter(FLock);
+  FLock.Enter;
 end;
 
 function TKqueueConnection._ReadEnabled: Boolean;
@@ -315,7 +325,7 @@ end;
 
 procedure TKqueueConnection._Unlock;
 begin
-  System.TMonitor.Exit(FLock);
+  FLock.Leave;
 end;
 
 function TKqueueConnection._UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
@@ -390,13 +400,11 @@ constructor TKqueueCrossSocket.Create(const AIoThreads: Integer);
 begin
   inherited;
 
-  FIdleLock := TObject.Create;
+  FIdleLock := TLock.Create;
 end;
 
 destructor TKqueueCrossSocket.Destroy;
 begin
-  FreeAndNil(FIdleLock);
-
   inherited;
 end;
 
@@ -417,8 +425,8 @@ var
   LKqListen: TKqueueListen;
   LConnection: ICrossConnection;
   LKqConnection: TKqueueConnection;
-  LSocket, LError: Integer;
-  LListenSocket, LClientSocket: THandle;
+  LError: Integer;
+  LSocket, LListenSocket, LClientSocket: TSocket;
   LSuccess: Boolean;
 begin
   LListen := AListen;
@@ -441,14 +449,14 @@ begin
       // 并立即将新到的连接关闭
       if (LError = EMFILE) then
       begin
-        System.TMonitor.Enter(FIdleLock);
+        FIdleLock.Enter;
         try
           _CloseIdleHandle;
           LSocket := TSocketAPI.Accept(LListenSocket, nil, nil);
           TSocketAPI.CloseSocket(LSocket);
           _OpenIdleHandle;
         finally
-          System.TMonitor.Exit(FIdleLock);
+          FIdleLock.Leave;
         end;
       end;
 
@@ -509,8 +517,6 @@ begin
 
   LKqConnection._Lock;
   try
-    LConnectCallback := LKqConnection.FConnectCallback;
-    LKqConnection.FConnectCallback := nil;
     LSuccess := LKqConnection._UpdateIoEvent([ieRead]);
   finally
     LKqConnection._Unlock;
@@ -673,10 +679,10 @@ var
 begin
   LStuff := 1;
   // 往 FStopHandle.WriteDes 写入任意数据, 唤醒工作线程
-  Posix.UniStd.__write(FStopHandle.WriteDes, @LStuff, SizeOf(LStuff));
+  __write(FStopHandle.WriteDes, @LStuff, SizeOf(LStuff));
 end;
 
-procedure TKqueueCrossSocket._SetNoSigPipe(ASocket: THandle);
+procedure TKqueueCrossSocket._SetNoSigPipe(ASocket: TSocket);
 begin
   TSocketAPI.SetSockOpt<Integer>(ASocket, SOL_SOCKET, SO_NOSIGPIPE, 1);
 end;
@@ -735,7 +741,7 @@ procedure TKqueueCrossSocket.Connect(const AHost: string; const APort: Word;
       ACallback(nil, False);
   end;
 
-  function _Connect(const ASocket: THandle; const AAddr: PRawAddrInfo): Boolean;
+  function _Connect(const ASocket: LSocket; const AAddr: PRawAddrInfo): Boolean;
   var
     LConnection: ICrossConnection;
     LKqConnection: TKqueueConnection;
@@ -743,14 +749,13 @@ procedure TKqueueCrossSocket.Connect(const AHost: string; const APort: Word;
     if (TSocketAPI.Connect(ASocket, AAddr.ai_addr, AAddr.ai_addrlen) = 0)
       or (GetLastError = EINPROGRESS) then
     begin
-      LConnection := CreateConnection(Self, ASocket, ctConnect);
+      LConnection := CreateConnection(Self, ASocket, ctConnect, ACallback);
       TriggerConnecting(LConnection);
       LKqConnection := LConnection as TKqueueConnection;
 
       LKqConnection._Lock;
       try
         LKqConnection.ConnectStatus := csConnecting;
-        LKqConnection.FConnectCallback := ACallback;
         if not LKqConnection._UpdateIoEvent([ieWrite]) then
         begin
           LConnection.Close;
@@ -775,7 +780,7 @@ procedure TKqueueCrossSocket.Connect(const AHost: string; const APort: Word;
 var
   LHints: TRawAddrInfo;
   P, LAddrInfo: PRawAddrInfo;
-  LSocket: THandle;
+  LSocket: LSocket;
 begin
   FillChar(LHints, SizeOf(TRawAddrInfo), 0);
   LHints.ai_family := AF_UNSPEC;
@@ -816,13 +821,14 @@ begin
 end;
 
 function TKqueueCrossSocket.CreateConnection(const AOwner: TCrossSocketBase;
-  const AClientSocket: THandle; const AConnectType: TConnectType): ICrossConnection;
+  const AClientSocket: TSocket; const AConnectType: TConnectType;
+  const AConnectCb: TCrossConnectionCallback): ICrossConnection;
 begin
-  Result := TKqueueConnection.Create(AOwner, AClientSocket, AConnectType);
+  Result := TKqueueConnection.Create(AOwner, AClientSocket, AConnectType, AConnectCb);
 end;
 
 function TKqueueCrossSocket.CreateListen(const AOwner: TCrossSocketBase;
-  const AListenSocket: THandle; const AFamily, ASockType, AProtocol: Integer): ICrossListen;
+  const AListenSocket: TSocket; const AFamily, ASockType, AProtocol: Integer): ICrossListen;
 begin
   Result := TKqueueListen.Create(AOwner, AListenSocket, AFamily, ASockType, AProtocol);
 end;
@@ -832,7 +838,7 @@ procedure TKqueueCrossSocket.Listen(const AHost: string; const APort: Word;
 var
   LHints: TRawAddrInfo;
   P, LAddrInfo: PRawAddrInfo;
-  LListenSocket: THandle;
+  LListenSocket: TSocket;
   LListen: ICrossListen;
   LKqListen: TKqueueListen;
   LSuccess: Boolean;

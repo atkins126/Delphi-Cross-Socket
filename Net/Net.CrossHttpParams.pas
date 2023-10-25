@@ -9,20 +9,36 @@
 {******************************************************************************}
 unit Net.CrossHttpParams;
 
+{$I zLib.inc}
+
 interface
 
 uses
-  System.SysUtils,
-  System.Classes,
-  System.Generics.Collections,
-  System.Generics.Defaults,
-  System.NetEncoding,
-  System.IOUtils,
-  System.RegularExpressions,
-  System.SyncObjs,
+  SysUtils,
+  Classes,
+  Generics.Collections,
+  Generics.Defaults,
+  DateUtils,
+  Math,
+
+  {$IFDEF DELPHI}
   System.Diagnostics,
-  System.DateUtils,
-  Net.CrossHttpUtils;
+  {$ELSE}
+  DTF.Types,
+  DTF.Diagnostics,
+  DTF.Generics,
+  {$ENDIF}
+
+  Net.CrossHttpUtils,
+
+  Utils.AnonymousThread,
+  Utils.RegEx,
+  Utils.IOUtils,
+  Utils.DateTime,
+  Utils.StrUtils,
+  Utils.SyncObjs,
+  Utils.ArrayUtils,
+  Utils.Utils;
 
 type
   TNameValue = record
@@ -30,10 +46,25 @@ type
     constructor Create(const AName, AValue: string);
   end;
 
+  INameValueComparer = IComparer<TNameValue>;
+  TNameValueComparison = {$IFDEF DELPHI}TComparison<TNameValue>{$ELSE}TComparisonAnonymousFunc<TNameValue>{$ENDIF};
+  TNameValueComparer = {$IFDEF DELPHI}TDelegatedComparer<TNameValue>{$ELSE}TDelegatedComparerAnonymousFunc<TNameValue>{$ENDIF};
+
   /// <summary>
   ///   参数基础类
   /// </summary>
-  TBaseParams = class(TEnumerable<TNameValue>)
+  TBaseParams = class
+  private type
+    TEnumerator = class
+    private
+      FIndex: Integer;
+      FParams: TBaseParams;
+    public
+      constructor Create(const AParams: TBaseParams);
+      function GetCurrent: TNameValue; inline;
+      function MoveNext: Boolean; inline;
+      property Current: TNameValue read GetCurrent;
+    end;
   private
     FParams: TList<TNameValue>;
 
@@ -43,23 +74,15 @@ type
     function GetCount: Integer;
     function GetItem(AIndex: Integer): TNameValue;
     procedure SetItem(AIndex: Integer; const AValue: TNameValue);
-  protected
-    function DoGetEnumerator: TEnumerator<TNameValue>; override;
-  public type
-    TEnumerator = class(TEnumerator<TNameValue>)
-    private
-      FList: TList<TNameValue>;
-      FIndex: Integer;
-    protected
-      function DoGetCurrent: TNameValue; override;
-      function DoMoveNext: Boolean; override;
-    public
-      constructor Create(const AList: TList<TNameValue>);
-    end;
   public
     constructor Create; overload; virtual;
     constructor Create(const AEncodedParams: string); overload; virtual;
     destructor Destroy; override;
+
+    /// <summary>
+    ///   枚举器
+    /// </summary>
+    function GetEnumerator: TEnumerator; inline;
 
     /// <summary>
     ///   添加参数
@@ -112,7 +135,7 @@ type
     /// <summary>
     ///   对参数排序
     /// </summary>
-    procedure Sort(const AComparison: TComparison<TNameValue> = nil);
+    procedure Sort(const AComparison: TNameValueComparison = nil);
 
     /// <summary>
     ///   从已编码的字符串中解码
@@ -123,7 +146,7 @@ type
     /// <param name="AClear">
     ///   是否清除现有数据
     /// </param>
-    procedure Decode(const AEncodedParams: string; AClear: Boolean = True); virtual; abstract;
+    function Decode(const AEncodedParams: string; AClear: Boolean = True): Boolean; virtual; abstract;
 
     /// <summary>
     ///   编码为字符串
@@ -175,7 +198,7 @@ type
     /// <param name="AClear">
     ///   是否清除现有数据
     /// </param>
-    procedure Decode(const AEncodedParams: string; AClear: Boolean = True); override;
+    function Decode(const AEncodedParams: string; AClear: Boolean = True): Boolean; override;
 
     /// <summary>
     ///   编码为字符串
@@ -207,13 +230,20 @@ type
     /// <param name="AClear">
     ///   是否清除现有数据
     /// </param>
-    procedure Decode(const AEncodedParams: string; AClear: Boolean = True); override;
+    function Decode(const AEncodedParams: string; AClear: Boolean = True): Boolean; override;
 
     /// <summary>
     ///   编码为字符串
     /// </summary>
     function Encode: string; override;
   end;
+
+  {$REGION 'Documentation'}
+  /// <summary>
+  ///   x-www-form-urlencoded 格式参数
+  /// </summary>
+  {$ENDREGION}
+  TFormUrlEncoded = class(THttpUrlParams);
 
   /// <summary>
   ///   带分隔符的参数
@@ -235,7 +265,7 @@ type
     /// <param name="AClear">
     ///   是否清除现有数据
     /// </param>
-    procedure Decode(const AEncodedParams: string; AClear: Boolean = True); override;
+    function Decode(const AEncodedParams: string; AClear: Boolean = True): Boolean; override;
 
     /// <summary>
     ///   编码为字符串
@@ -253,9 +283,19 @@ type
     property UrlEncode: Boolean read FUrlEncode write FUrlEncode;
   end;
 
+  {$REGION 'Documentation'}
   /// <summary>
   ///   客户端请求头中的Cookies
   /// </summary>
+  /// <remarks>
+  ///   <para>
+  ///     格式如下
+  ///   </para>
+  ///   <para>
+  ///     Cookie: name1=value1; name2=value2; ...
+  ///   </para>
+  /// </remarks>
+  {$ENDREGION}
   TRequestCookies = class(TBaseParams)
   public
     /// <summary>
@@ -267,7 +307,7 @@ type
     /// <param name="AClear">
     ///   是否清除现有数据
     /// </param>
-    procedure Decode(const AEncodedParams: string; AClear: Boolean = True); override;
+    function Decode(const AEncodedParams: string; AClear: Boolean = True): Boolean; override;
 
     /// <summary>
     ///   编码为字符串
@@ -275,6 +315,20 @@ type
     function Encode: string; override;
   end;
 
+  {$REGION 'Documentation'}
+  /// <summary>
+  ///   响应头中的Cookie
+  /// </summary>
+  /// <remarks>
+  ///   <para>
+  ///     格式如下
+  ///   </para>
+  ///   <para>
+  ///     Set-Cookie: name=value; [expires=date;] [path=path;]
+  ///     [domain=domain;] [secure;] [HttpOnly;] <br />
+  ///   </para>
+  /// </remarks>
+  {$ENDREGION}
   TResponseCookie = record
     /// <summary>
     ///   Cookie名称
@@ -327,7 +381,9 @@ type
 
     constructor Create(const AName, AValue: string; AMaxAge: Integer;
       const APath: string = ''; const ADomain: string = '';
-      AHttpOnly: Boolean = False; ASecure: Boolean = False);
+      AHttpOnly: Boolean = False; ASecure: Boolean = False); overload;
+
+    constructor Create(const ACookieData: string; const ADomain: string = ''); overload;
 
     function Encode: string;
   end;
@@ -357,8 +413,9 @@ type
     FFilePath: string;
     FContentType: string;
     FContentTransferEncoding: string;
+    FValueOwned: Boolean;
   public
-    constructor Create;
+    constructor Create; overload;
     destructor Destroy; override;
 
     /// <summary>
@@ -409,7 +466,18 @@ type
   /// <summary>
   ///   MultiPartFormData类
   /// </summary>
-  THttpMultiPartFormData = class(TEnumerable<TFormField>)
+  THttpMultiPartFormData = class
+  private type
+    TEnumerator = class
+    private
+      FList: TList<TFormField>;
+      FIndex: Integer;
+    public
+      constructor Create(const AList: TList<TFormField>);
+      function GetCurrent: TFormField; inline;
+      function MoveNext: Boolean; inline;
+      property Current: TFormField read GetCurrent;
+    end;
   public type
     TDecodeState = (dsBoundary, dsDetect, dsPartHeader, dsPartData);
   private const
@@ -418,7 +486,7 @@ type
     MAX_PART_HEADER: Integer = 64 * 1024;
   private
     FBoundary, FStoragePath: string;
-    FBoundaryBytes, FLookbehind: TBytes;
+    FFirstBoundaryBytes, FBoundaryBytes, FLookbehind: TBytes;
     FBoundaryIndex, FDetectHeaderIndex, FDetectEndIndex, FPartDataBegin: Integer;
     FPrevBoundaryIndex: Integer;
     FDecodeState: TDecodeState;
@@ -433,22 +501,15 @@ type
     function GetCount: Integer;
     function GetDataSize: Integer;
     function GetField(const AName: string): TFormField;
-  protected
-    function DoGetEnumerator: TEnumerator<TFormField>; override;
-  public type
-    TEnumerator = class(TEnumerator<TFormField>)
-    private
-      FList: TList<TFormField>;
-      FIndex: Integer;
-    protected
-      function DoGetCurrent: TFormField; override;
-      function DoMoveNext: Boolean; override;
-    public
-      constructor Create(const AList: TList<TFormField>);
-    end;
+    procedure SetBoundary(const AValue: string);
   public
     constructor Create; virtual;
     destructor Destroy; override;
+
+    /// <summary>
+    ///   枚举器
+    /// </summary>
+    function GetEnumerator: TEnumerator; inline;
 
     /// <summary>
     /// 初始化Boundary(Decode之前调用)
@@ -471,15 +532,74 @@ type
     /// </summary>
     procedure Clear;
 
+    {$REGION 'Documentation'}
+    /// <summary>
+    ///   添加字段
+    /// </summary>
+    /// <param name="AFieldName">
+    ///   字段名
+    /// </param>
+    /// <param name="AValue">
+    ///   字段值
+    /// </param>
+    {$ENDREGION}
+    function AddField(const AFieldName: string; const AValue: TBytes): TFormField; overload;
+
+    {$REGION 'Documentation'}
+    /// <summary>
+    ///   添加字段
+    /// </summary>
+    /// <param name="AFieldName">
+    ///   字段名
+    /// </param>
+    /// <param name="AValue">
+    ///   字段值
+    /// </param>
+    {$ENDREGION}
+    function AddField(const AFieldName, AValue: string): TFormField; overload;
+
+    {$REGION 'Documentation'}
+    /// <summary>
+    ///   添加文件字段
+    /// </summary>
+    /// <param name="AFieldName">
+    ///   字段名
+    /// </param>
+    /// <param name="AFileName">
+    ///   文件名
+    /// </param>
+    /// <param name="AStream">
+    ///   文件流
+    /// </param>
+    /// <param name="AOwned">
+    ///   是否自动释放
+    /// </param>
+    {$ENDREGION}
+    function AddFile(const AFieldName, AFileName: string;
+      const AStream: TStream; const AOwned: Boolean): TFormField; overload;
+
+    {$REGION 'Documentation'}
+    /// <summary>
+    ///   添加文件字段
+    /// </summary>
+    /// <param name="AFieldName">
+    ///   字段名
+    /// </param>
+    /// <param name="AFileName">
+    ///   文件名
+    /// </param>
+    {$ENDREGION}
+    function AddFile(const AFieldName, AFileName: string): TFormField; overload;
+
     /// <summary>
     /// 查找参数
     /// </summary>
     function FindField(const AFieldName: string; out AField: TFormField): Boolean;
 
     /// <summary>
-    /// Boundary特征字符串(只读)
+    /// Boundary特征字符串
     /// </summary>
-    property Boundary: string read FBoundary;
+    property Boundary: string read FBoundary write SetBoundary;
 
     /// <summary>
     /// 上传文件保存的路径
@@ -510,6 +630,42 @@ type
     /// 对象释放时自动删除上传的文件
     /// </summary>
     property AutoDeleteFiles: Boolean read FAutoDeleteFiles write FAutoDeleteFiles;
+  end;
+
+  {$REGION 'Documentation'}
+  /// <summary>
+  ///   MultiPartFormData流
+  /// </summary>
+  /// <remarks>
+  ///   动态从 MultiPartFormData 对象中读取数据, 而不是打包到内存中, 所以支持从磁盘加载超大文件
+  /// </remarks>
+  {$ENDREGION}
+  THttpMultiPartFormStream = class(TStream)
+  private type
+    TFormFieldEx = record
+      Header: TBytes;
+      Field: TFormField;
+      Offset: Int64;
+
+      function HeaderSize: Integer;
+      function DataSize: Int64;
+      function TotalSize: Int64;
+    end;
+
+    TFormFieldExArray = TArray<TFormFieldEx>;
+  private
+    FMultiPartFormData: THttpMultiPartFormData;
+    FFormFieldExArray: TFormFieldExArray;
+    FMultiPartEnd: TBytes;
+    FSize, FPosition, FEndPos: Int64;
+
+    procedure _Init;
+    function _GetFiledIndexByOffset(const AOffset: Int64): Integer;
+  public
+    constructor Create(const AMultiPartFormData: THttpMultiPartFormData);
+
+    function Read(var ABuffer; ACount: Longint): Longint; override;
+    function Seek(const AOffset: Int64; AOrigin: TSeekOrigin): Int64; override;
   end;
 
   TSessionsBase = class;
@@ -590,9 +746,8 @@ type
   TSessionBase = class abstract(TInterfacedObject, ISession)
   private
     FOwner: TSessionsBase;
-
-    function GetOwner: ISessions;
   protected
+    function GetOwner: ISessions;
     function GetSessionID: string; virtual; abstract;
     function GetCreateTime: TDateTime; virtual; abstract;
     function GetLastAccessTime: TDateTime; virtual; abstract;
@@ -846,10 +1001,12 @@ type
   TSessions = class(TSessionsBase)
   private
     FNewGUIDFunc: TFunc<string>;
-    FLocker: TMultiReadExclusiveWriteSynchronizer;
+    FLocker: IReadWriteLock;
     FSessionClass: TSessionClass;
     FExpire: Integer;
     FShutdown, FExpiredProcRunning: Boolean;
+
+    procedure _ClearExpiredSessions;
   protected
     FSessions: TDictionary<string, ISession>;
 
@@ -891,10 +1048,6 @@ type
 
 implementation
 
-uses
-  Utils.Utils,
-  Utils.DateTime;
-
 { TNameValue }
 
 constructor TNameValue.Create(const AName,
@@ -906,24 +1059,21 @@ end;
 
 { TBaseParams.TEnumerator }
 
-constructor TBaseParams.TEnumerator.Create(const AList: TList<TNameValue>);
+constructor TBaseParams.TEnumerator.Create(const AParams: TBaseParams);
 begin
-  inherited Create;
-  FList := AList;
+  FParams := AParams;
   FIndex := -1;
 end;
 
-function TBaseParams.TEnumerator.DoGetCurrent: TNameValue;
+function TBaseParams.TEnumerator.GetCurrent: TNameValue;
 begin
-  Result := FList[FIndex];
+  Result := FParams.Items[FIndex];
 end;
 
-function TBaseParams.TEnumerator.DoMoveNext: Boolean;
+function TBaseParams.TEnumerator.MoveNext: Boolean;
 begin
-  if (FIndex >= FList.Count) then
-    Exit(False);
   Inc(FIndex);
-  Result := (FIndex < FList.Count);
+  Result := (FIndex < FParams.Count);
 end;
 
 { TBaseParams }
@@ -977,7 +1127,7 @@ var
   I: Integer;
 begin
   for I := 0 to FParams.Count - 1 do
-    if SameText(FParams[I].Name, AName) then Exit(I);
+    if TStrUtils.SameText(FParams[I].Name, AName) then Exit(I);
   Result := -1;
 end;
 
@@ -993,6 +1143,7 @@ begin
     Exit(True);
   end;
 
+  AValue := '';
   Result := False;
 end;
 
@@ -1015,14 +1166,14 @@ begin
   Result := FParams.Count;
 end;
 
+function TBaseParams.GetEnumerator: TEnumerator;
+begin
+  Result := TEnumerator.Create(Self);
+end;
+
 function TBaseParams.GetItem(AIndex: Integer): TNameValue;
 begin
   Result := FParams.Items[AIndex];
-end;
-
-function TBaseParams.DoGetEnumerator: TEnumerator<TNameValue>;
-begin
-  Result := TEnumerator.Create(FParams);
 end;
 
 function TBaseParams.ExistsParam(const AName: string): Boolean;
@@ -1060,12 +1211,12 @@ begin
     FParams.Add(TNameValue.Create(AName, AValue));
 end;
 
-procedure TBaseParams.Sort(const AComparison: TComparison<TNameValue>);
+procedure TBaseParams.Sort(const AComparison: TNameValueComparison);
 begin
   if Assigned(AComparison) then
-    FParams.Sort(TComparer<TNameValue>.Construct(AComparison))
+    FParams.Sort(TNameValueComparer.Create(AComparison))
   else
-    FParams.Sort(TComparer<TNameValue>.Construct(
+    FParams.Sort(TNameValueComparer.Create(
       function(const Left, Right: TNameValue): Integer
       begin
         Result := CompareStr(Left.Name, Right.Name, TLocaleOptions.loInvariantLocale);
@@ -1082,9 +1233,9 @@ begin
   FEncodeValue := True;
 end;
 
-procedure THttpUrlParams.Decode(const AEncodedParams: string; AClear: Boolean);
+function THttpUrlParams.Decode(const AEncodedParams: string; AClear: Boolean): Boolean;
 var
-  p, q: PChar;
+  p, pEnd, q: PChar;
   LName, LValue: string;
   LSize: Integer;
 begin
@@ -1092,38 +1243,41 @@ begin
     FParams.Clear;
 
   p := PChar(AEncodedParams);
-  while (p^ <> #0) do
+  pEnd := p + Length(AEncodedParams);
+  while (p < pEnd) do
   begin
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> '=') and (p^ <> '&') do
+    while (p < pEnd) and (p^ <> '=') and (p^ <> '&') do
     begin
       Inc(LSize);
       Inc(p);
     end;
     SetLength(LName, LSize);
     Move(q^, Pointer(LName)^, LSize * SizeOf(Char));
-    LName := TNetEncoding.URL.Decode(LName);
+    LName := TCrossHttpUtils.UrlDecode(LName);
     // 跳过多余的'='
-    while (p^ <> #0) and (p^ = '=') do
+    while (p < pEnd) and (p^ = '=') do
       Inc(p);
 
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> '&') do
+    while (p < pEnd) and (p^ <> '&') do
     begin
       Inc(LSize);
       Inc(p);
     end;
     SetLength(LValue, LSize);
     Move(q^, Pointer(LValue)^, LSize * SizeOf(Char));
-    LValue := TNetEncoding.URL.Decode(LValue);
+    LValue := TCrossHttpUtils.UrlDecode(LValue);
     // 跳过多余的'&'
-    while (p^ <> #0) and (p^ = '&') do
+    while (p < pEnd) and (p^ = '&') do
       Inc(p);
 
     Add(LName, LValue);
   end;
+
+  Result := (Self.Count > 0);
 end;
 
 function THttpUrlParams.Encode: string;
@@ -1136,11 +1290,11 @@ begin
     if (I > 0) then
       Result := Result + '&';
     if FEncodeName then
-      Result := Result + TNetEncoding.URL.Encode(FParams[I].Name)
+      Result := Result + TCrossHttpUtils.UrlEncode(FParams[I].Name)
     else
       Result := Result + FParams[I].Name;
     if FEncodeValue then
-      Result := Result + '=' + TNetEncoding.URL.Encode(FParams[I].Value)
+      Result := Result + '=' + TCrossHttpUtils.UrlEncode(FParams[I].Value)
     else
       Result := Result + '=' + FParams[I].Value;
   end;
@@ -1148,9 +1302,9 @@ end;
 
 { THttpHeader }
 
-procedure THttpHeader.Decode(const AEncodedParams: string; AClear: Boolean);
+function THttpHeader.Decode(const AEncodedParams: string; AClear: Boolean): Boolean;
 var
-  p, q: PChar;
+  p, pEnd, q: PChar;
   LName, LValue: string;
   LSize: Integer;
 begin
@@ -1158,11 +1312,12 @@ begin
     FParams.Clear;
 
   p := PChar(AEncodedParams);
-  while (p^ <> #0) do
+  pEnd := p + Length(AEncodedParams);
+  while (p < pEnd) do
   begin
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> ':') do
+    while (p < pEnd) and (p^ <> ':') do
     begin
       Inc(LSize);
       Inc(p);
@@ -1170,12 +1325,12 @@ begin
     SetLength(LName, LSize);
     Move(q^, Pointer(LName)^, LSize * SizeOf(Char));
     // 跳过多余的':'
-    while (p^ <> #0) and ((p^ = ':') or (p^ = ' ')) do
+    while (p < pEnd) and ((p^ = ':') or (p^ = ' ')) do
       Inc(p);
 
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> #13) do
+    while (p < pEnd) and (p^ <> #13) do
     begin
       Inc(LSize);
       Inc(p);
@@ -1183,11 +1338,13 @@ begin
     SetLength(LValue, LSize);
     Move(q^, Pointer(LValue)^, LSize * SizeOf(Char));
     // 跳过多余的#13#10
-    while (p^ <> #0) and ((p^ = #13) or (p^ = #10)) do
+    while (p < pEnd) and ((p^ = #13) or (p^ = #10)) do
       Inc(p);
 
     Add(LName, LValue);
   end;
+
+  Result := (Self.Count > 0);
 end;
 
 function THttpHeader.Encode: string;
@@ -1222,9 +1379,9 @@ begin
   inherited Create(AEncodedParams);
 end;
 
-procedure TDelimitParams.Decode(const AEncodedParams: string; AClear: Boolean);
+function TDelimitParams.Decode(const AEncodedParams: string; AClear: Boolean): Boolean;
 var
-  p, q: PChar;
+  p, pEnd, q: PChar;
   LName, LValue: string;
   LSize: Integer;
 begin
@@ -1232,11 +1389,12 @@ begin
     FParams.Clear;
 
   p := PChar(AEncodedParams);
-  while (p^ <> #0) do
+  pEnd := p + Length(AEncodedParams);
+  while (p < pEnd) do
   begin
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> '=') do
+    while (p < pEnd) and (p^ <> '=') do
     begin
       Inc(LSize);
       Inc(p);
@@ -1244,12 +1402,12 @@ begin
     SetLength(LName, LSize);
     Move(q^, Pointer(LName)^, LSize * SizeOf(Char));
     // 跳过多余的'='
-    while (p^ <> #0) and (p^ = '=') do
+    while (p < pEnd) and (p^ = '=') do
       Inc(p);
 
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> FDelimiter) do
+    while (p < pEnd) and (p^ <> FDelimiter) do
     begin
       Inc(LSize);
       Inc(p);
@@ -1257,13 +1415,15 @@ begin
     SetLength(LValue, LSize);
     Move(q^, Pointer(LValue)^, LSize * SizeOf(Char));
     if FUrlEncode then
-      LValue := TNetEncoding.URL.Decode(LValue);
+      LValue := TCrossHttpUtils.UrlDecode(LValue);
     // 跳过多余的';'
-    while (p^ <> #0) and ((p^ = FDelimiter) or (p^ = ' ')) do
+    while (p < pEnd) and ((p^ = FDelimiter) or (p^ = ' ')) do
       Inc(p);
 
     Add(LName, LValue);
   end;
+
+  Result := (Self.Count > 0);
 end;
 
 function TDelimitParams.Encode: string;
@@ -1278,16 +1438,16 @@ begin
       Result := Result + FDelimiter + ' ';
     LValue := FParams[I].Value;
     if FUrlEncode then
-      LValue := TNetEncoding.URL.Encode(LValue);
+      LValue := TCrossHttpUtils.UrlEncode(LValue);
     Result := Result + FParams[I].Name + '=' + LValue;
   end;
 end;
 
 { TRequestCookies }
 
-procedure TRequestCookies.Decode(const AEncodedParams: string; AClear: Boolean);
+function TRequestCookies.Decode(const AEncodedParams: string; AClear: Boolean): Boolean;
 var
-  p, q: PChar;
+  p, pEnd, q: PChar;
   LName, LValue: string;
   LSize: Integer;
 begin
@@ -1295,11 +1455,12 @@ begin
     FParams.Clear;
 
   p := PChar(AEncodedParams);
-  while (p^ <> #0) do
+  pEnd := p + Length(AEncodedParams);
+  while (p < pEnd) do
   begin
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> '=') do
+    while (p < pEnd) and (p^ <> '=') do
     begin
       Inc(LSize);
       Inc(p);
@@ -1307,25 +1468,27 @@ begin
     SetLength(LName, LSize);
     Move(q^, Pointer(LName)^, LSize * SizeOf(Char));
     // 跳过多余的'='
-    while (p^ <> #0) and (p^ = '=') do
+    while (p < pEnd) and (p^ = '=') do
       Inc(p);
 
     q := p;
     LSize := 0;
-    while (p^ <> #0) and (p^ <> ';') do
+    while (p < pEnd) and (p^ <> ';') do
     begin
       Inc(LSize);
       Inc(p);
     end;
     SetLength(LValue, LSize);
     Move(q^, Pointer(LValue)^, LSize * SizeOf(Char));
-    LValue := TNetEncoding.URL.Decode(LValue);
+    LValue := TCrossHttpUtils.UrlDecode(LValue);
     // 跳过多余的';'
-    while (p^ <> #0) and ((p^ = ';') or (p^ = ' ')) do
+    while (p < pEnd) and ((p^ = ';') or (p^ = ' ')) do
       Inc(p);
 
     Add(LName, LValue);
   end;
+
+  Result := (Self.Count > 0);
 end;
 
 function TRequestCookies.Encode: string;
@@ -1337,7 +1500,7 @@ begin
   begin
     if (I > 0) then
       Result := Result + '; ';
-    Result := Result + FParams[I].Name + '=' + TNetEncoding.URL.Encode(FParams[I].Value);
+    Result := Result + FParams[I].Name + '=' + TCrossHttpUtils.UrlEncode(FParams[I].Value);
   end;
 end;
 
@@ -1346,31 +1509,107 @@ end;
 constructor TResponseCookie.Create(const AName, AValue: string;
   AMaxAge: Integer; const APath, ADomain: string; AHttpOnly, ASecure: Boolean);
 begin
-  Name := AName;
-  Value := AValue;
-  MaxAge := AMaxAge;
-  Path := APath;
-  Domain := ADomain;
-  HttpOnly := AHttpOnly;
-  Secure := ASecure;
+  Self.Name := AName;
+  Self.Value := AValue;
+  Self.MaxAge := AMaxAge;
+  Self.Path := APath;
+  Self.Domain := ADomain;
+  Self.HttpOnly := AHttpOnly;
+  Self.Secure := ASecure;
+end;
+
+constructor TResponseCookie.Create(const ACookieData, ADomain: string);
+
+  procedure SetExpires(const AValue: string);
+  begin
+    if (Self.MaxAge = 0) then
+      Self.MaxAge := TCrossHttpUtils.RFC1123_StrToDate(AValue).SecondsDiffer(Now);
+  end;
+
+  procedure SetMaxAge(const AValue: string);
+  var
+    LMaxAge: Integer;
+  begin
+    if TryStrToInt(AValue, LMaxAge) then
+      Self.MaxAge := LMaxAge;
+  end;
+
+  procedure SetPath(const AValue: string);
+  begin
+    if (AValue = '') or (AValue[High(AValue)] <> '/') then
+      Self.Path := AValue + '/'
+    else
+      Self.Path := AValue;
+  end;
+
+  procedure SetDomain(const AValue: string);
+  begin
+    if (AValue <> '') then
+      Self.Domain := AValue;
+  end;
+
+var
+  LValues: TArray<string>;
+  I: Integer;
+  LPos: Integer;
+  LName: string;
+  LValue: string;
+begin
+  LValues := ACookieData.Split([Char(';')], Char('"'));
+  if Length(LValues) = 0 then Exit;
+
+  LPos := LValues[0].IndexOf(Char('='));
+  if (LPos <= 0) then Exit;
+
+  Self.Name := LValues[0].Substring(0, LPos).Trim;
+  Self.Value := TCrossHttpUtils.UrlDecode(LValues[0].Substring(LPos + 1).Trim);
+  Self.Path := '/';
+  Self.Domain := ADomain;
+
+  for I := 1 to High(LValues) do
+  begin
+    LPos := LValues[I].IndexOf(Char('='));
+    if LPos > 0 then
+    begin
+      LName := LValues[I].Substring(0, LPos).Trim;
+      LValue := LValues[I].Substring(LPos + 1).Trim;
+      if (LValue.Length > 1) and (LValue.Chars[0] = '"') and (LValue[High(LValue)] = '"') then
+        LValue := LValue.Substring(1, LValue.Length - 2);
+    end
+    else
+    begin
+      LName := LValues[I].Trim;
+      LValue := '';
+    end;
+
+    if TStrUtils.SameText(LName, 'Max-Age') then
+      SetMaxAge(LValue)
+    else if TStrUtils.SameText(LName, 'Expires') then
+      SetExpires(LValue)
+    else if TStrUtils.SameText(LName, 'Path') then
+      SetPath(LValue)
+    else if TStrUtils.SameText(LName, 'Domain') then
+      SetDomain(LValue)
+    else if TStrUtils.SameText(LName, 'HttpOnly') then
+      Self.HttpOnly := True
+    else if TStrUtils.SameText(LName, 'Secure') then
+      Self.Secure := True;
+  end;
 end;
 
 function TResponseCookie.Encode: string;
 begin
-  Result := Name + '=' + TNetEncoding.URL.Encode(Value);
+  Result := Self.Name + '=' + TCrossHttpUtils.UrlEncode(Self.Value);
 
-  if (MaxAge > 0) then
-  begin
-    Result := Result + '; Max-Age=' + MaxAge.ToString;
-    Result := Result + '; Expires=' + TCrossHttpUtils.RFC1123_DateToStr(Now.AddSeconds(MaxAge));
-  end;
-  if (Path <> '') then
-    Result := Result + '; Path=' + Path;
-  if (Domain <> '') then
-    Result := Result + '; Domain=' + Domain;
-  if HttpOnly then
+  if (Self.MaxAge > 0) then
+    Result := Result + '; Max-Age=' + Self.MaxAge.ToString;
+  if (Self.Path <> '') then
+    Result := Result + '; Path=' + Self.Path;
+  if (Self.Domain <> '') then
+    Result := Result + '; Domain=' + Self.Domain;
+  if Self.HttpOnly then
     Result := Result + '; HttpOnly';
-  if Secure then
+  if Self.Secure then
     Result := Result + '; Secure';
 end;
 
@@ -1378,6 +1617,7 @@ end;
 
 constructor TFormField.Create;
 begin
+  FValueOwned := True;
 end;
 
 destructor TFormField.Destroy;
@@ -1389,7 +1629,7 @@ end;
 
 procedure TFormField.FreeValue;
 begin
-  if Assigned(FValue) then
+  if FValueOwned and Assigned(FValue) then
     FreeAndNil(FValue);
 end;
 
@@ -1436,15 +1676,13 @@ begin
   FIndex := -1;
 end;
 
-function THttpMultiPartFormData.TEnumerator.DoGetCurrent: TFormField;
+function THttpMultiPartFormData.TEnumerator.GetCurrent: TFormField;
 begin
   Result := FList[FIndex];
 end;
 
-function THttpMultiPartFormData.TEnumerator.DoMoveNext: Boolean;
+function THttpMultiPartFormData.TEnumerator.MoveNext: Boolean;
 begin
-  if (FIndex >= FList.Count) then
-    Exit(False);
   Inc(FIndex);
   Result := (FIndex < FList.Count);
 end;
@@ -1466,25 +1704,64 @@ begin
   inherited;
 end;
 
+function THttpMultiPartFormData.AddField(const AFieldName: string;
+  const AValue: TBytes): TFormField;
+begin
+  Result := TFormField.Create;
+  Result.FName := AFieldName;
+  Result.FValueOwned := True;
+  Result.FValue := TBytesStream.Create(AValue);
+  Result.FContentType := TMediaType.APPLICATION_OCTET_STREAM;
+
+  FPartFields.Add(Result);
+end;
+
+function THttpMultiPartFormData.AddField(const AFieldName, AValue: string): TFormField;
+begin
+  Result := TFormField.Create;
+  Result.FName := AFieldName;
+  Result.FValueOwned := True;
+  Result.FValue := TBytesStream.Create(TEncoding.UTF8.GetBytes(AValue));
+
+  FPartFields.Add(Result);
+end;
+
+function THttpMultiPartFormData.AddFile(const AFieldName, AFileName: string;
+  const AStream: TStream; const AOwned: Boolean): TFormField;
+begin
+  Result := TFormField.Create;
+  Result.FName := AFieldName;
+  Result.FFileName := AFileName;
+  Result.FValueOwned := AOwned;
+  Result.FValue := AStream;
+  Result.FContentType := TCrossHttpUtils.GetFileMIMEType(AFileName);
+
+  FPartFields.Add(Result);
+end;
+
+function THttpMultiPartFormData.AddFile(const AFieldName, AFileName: string): TFormField;
+begin
+  Result := AddFile(AFieldName,
+    ExtractFileName(AFileName),
+    TFileUtils.OpenRead(AFileName),
+    True);
+  Result.FFilePath := AFileName;
+end;
+
 procedure THttpMultiPartFormData.Clear;
 var
   LField: TFormField;
 begin
   for LField in FPartFields do
   begin
-    if FAutoDeleteFiles and TFile.Exists(LField.FilePath) then
+    if FAutoDeleteFiles and FileExists(LField.FilePath) then
     begin
       LField.FreeValue;
-      TFile.Delete(LField.FilePath);
+      DeleteFile(LField.FilePath);
     end;
   end;
 
   FPartFields.Clear;
-end;
-
-function THttpMultiPartFormData.DoGetEnumerator: TEnumerator<TFormField>;
-begin
-  Result := TEnumerator.Create(FPartFields);
 end;
 
 function THttpMultiPartFormData.FindField(const AFieldName: string;
@@ -1499,6 +1776,7 @@ begin
     Exit(True);
   end;
 
+  AField := nil;
   Result := False;
 end;
 
@@ -1512,7 +1790,7 @@ var
   I: Integer;
 begin
   for I := 0 to FPartFields.Count - 1 do
-    if SameText(FPartFields[I].Name, AName) then Exit(I);
+    if TStrUtils.SameText(FPartFields[I].Name, AName) then Exit(I);
   Result := -1;
 end;
 
@@ -1530,6 +1808,11 @@ begin
     Inc(Result, LPartField.FValue.Size);
 end;
 
+function THttpMultiPartFormData.GetEnumerator: TEnumerator;
+begin
+  Result := TEnumerator.Create(FPartFields);
+end;
+
 function THttpMultiPartFormData.GetField(const AName: string): TFormField;
 var
   I: Integer;
@@ -1543,14 +1826,29 @@ end;
 procedure THttpMultiPartFormData.InitWithBoundary(const ABoundary: string);
 begin
   Clear;
-  FBoundary := ABoundary;
-  FBoundary := FBoundary.Trim(['"']);
-  FBoundaryBytes := TEncoding.ANSI.GetBytes(#13#10'--' + FBoundary);
+
+  SetBoundary(ABoundary);
+
   FDecodeState := dsBoundary;
   FBoundaryIndex := 0;
   FPrevBoundaryIndex := 0;
   FCurrentPartHeader.Clear;
   SetLength(FLookbehind, Length(FBoundaryBytes) + 8);
+end;
+
+procedure THttpMultiPartFormData.SetBoundary(const AValue: string);
+begin
+  if (FBoundary <> AValue) then
+  begin
+    FBoundary := AValue;
+    FBoundary := FBoundary.Trim(['"']);
+
+    // 第一块数据是紧跟着 HTTP HEADER 的, 前面没有多余的 #13#10
+    FFirstBoundaryBytes := TEncoding.ANSI.GetBytes('--' + FBoundary);
+
+    // 第二块及以后的数据 Boundary 前面都会有 #13#10
+    FBoundaryBytes := TArrayUtils<Byte>.Concat([13, 10], FFirstBoundaryBytes);
+  end;
 end;
 
 function THttpMultiPartFormData.Decode(const ABuf: Pointer; ALen: Integer): Integer;
@@ -1594,19 +1892,20 @@ function THttpMultiPartFormData.Decode(const ABuf: Pointer; ALen: Integer): Inte
         if LMatch.Success then
         begin
           AFormField.FFileName := LMatch.Groups[1].Value;
-          AFormField.FFilePath := TPath.Combine(FStoragePath,
-            __NewFileID + TPath.GetExtension(AFormField.FFileName));
+          AFormField.FFilePath := TPathUtils.Combine(FStoragePath,
+            __NewFileID + TPathUtils.GetExtension(AFormField.FFileName));
         end else
         begin
           AFormField.FFileName := __NewFileID + '.bin';
-          AFormField.FFilePath := TPath.Combine(FStoragePath,
+          AFormField.FFilePath := TPathUtils.Combine(FStoragePath,
             AFormField.FFileName);
         end;
 
-        AFormField.FValue := TFile.Create(AFormField.FFilePath);
+        AFormField.FValue := TFileUtils.OpenCreate(AFormField.FFilePath);
       end else
         AFormField.FValue := TBytesStream.Create(nil);
 
+      AFormField.FValueOwned := True;
       AFormField.FContentTransferEncoding := LFieldHeader['Content-Transfer-Encoding'];
     finally
       FreeAndNil(LFieldHeader);
@@ -1615,7 +1914,7 @@ function THttpMultiPartFormData.Decode(const ABuf: Pointer; ALen: Integer): Inte
 var
   C: Byte;
   I: Integer;
-  P: PByteArray;
+  P: PByte;
   LPartHeader: string;
 begin
   if (FBoundaryBytes = nil) then Exit(0);
@@ -1658,12 +1957,12 @@ begin
         begin
           // 第一块数据是紧跟着 HTTP HEADER 的, 前面没有多余的 #13#10
           // 所以这里检测时要跳过 2 个字节
-          if (C = FBoundaryBytes[2{#13#10} + FBoundaryIndex]) then
+          if (C = FFirstBoundaryBytes[FBoundaryIndex]) then
             Inc(FBoundaryIndex)
           else
             FBoundaryIndex := 0;
           // --Boundary
-          if (2{#13#10} + FBoundaryIndex >= Length(FBoundaryBytes)) then
+          if (FBoundaryIndex >= Length(FFirstBoundaryBytes)) then
           begin
             FDecodeState := dsDetect;
             CR := 0;
@@ -1738,7 +2037,7 @@ begin
           if (CR = 2) and (LF = 2) then
           begin
             // 块头部通常采用UTF8编码
-            LPartHeader := TEncoding.UTF8.GetString(FCurrentPartHeader.Bytes, 0, FCurrentPartHeader.Size - 4{#13#10#13#10});
+            LPartHeader := TUtils.GetString(FCurrentPartHeader.Bytes, 0, FCurrentPartHeader.Size - 4{#13#10#13#10});
             FCurrentPartHeader.Clear;
             FCurrentPartField := TFormField.Create;
             __InitFormFieldByHeader(FCurrentPartField, LPartHeader);
@@ -1756,35 +2055,42 @@ begin
       dsPartData:
         begin
           // 如果这是一个新的数据块, 需要保存数据块起始位置
-          if (FPartDataBegin < 0) and (FPrevBoundaryIndex = 0) then
+          if (FPartDataBegin < 0) then
             FPartDataBegin := I;
 
           // 检测Boundary
           if (C = FBoundaryBytes[FBoundaryIndex]) then
-            Inc(FBoundaryIndex)
-          else
           begin
-            FBoundaryIndex := 0;
+            Inc(FBoundaryIndex);
 
-            if (FPartDataBegin < 0) then
-              FPartDataBegin := I;
-          end;
-
-          // 上一个内存块结尾有部分有点像Boundary的数据, 进一步判断
-          if (FPrevBoundaryIndex > 0) then
-          begin
-            // 如果当前字节依然能跟Boundary匹配, 继续将其保存以作进一步分析
-            if (FBoundaryIndex > 0) then
+            if (FPrevBoundaryIndex > 0) then
             begin
               FLookbehind[FPrevBoundaryIndex] := C;
               Inc(FPrevBoundaryIndex);
-            end else
-            // 当前字节与Boundary不匹配, 那么说明之前保存的有点像Boundary的数据
-            // 并不是Boundary, 而是数据块中的数据, 将其存入Field中
+            end;
+          end else
+          begin
+            // 上一个内存块结尾有部分有点像Boundary的数据,
+            // 进一步判断之后确定不是Boundary, 需要把这部分数据写入Field中
+            if (FPrevBoundaryIndex > 0) then
             begin
               FCurrentPartField.FValue.Write(FLookbehind[0], FPrevBoundaryIndex);
               FPrevBoundaryIndex := 0;
               FPartDataBegin := I;
+            end;
+
+            if (FBoundaryIndex > 0) then
+            begin
+              // 之前检测到有一部分数据跟Boundary有点像, 但是到这个字节可以确定之前
+              // 这部分数据并不是Boundary, 需要把这部分数据写入Field中
+              FCurrentPartField.FValue.Write(P[FPartDataBegin], I - FPartDataBegin);
+              FPartDataBegin := I;
+
+              FBoundaryIndex := 0;
+
+              // 再次检测Boundary
+              if (C = FBoundaryBytes[FBoundaryIndex]) then
+                Inc(FBoundaryIndex);
             end;
           end;
 
@@ -1823,6 +2129,270 @@ begin
   Result := ALen;
 end;
 
+{ THttpMultiPartFormStream.TFormFieldEx }
+
+function THttpMultiPartFormStream.TFormFieldEx.DataSize: Int64;
+begin
+  if (Field <> nil) and (Field.Value <> nil) then
+    Result := Field.Value.Size
+  else
+    Result := 0;
+end;
+
+function THttpMultiPartFormStream.TFormFieldEx.HeaderSize: Integer;
+begin
+  Result := Length(Header);
+end;
+
+function THttpMultiPartFormStream.TFormFieldEx.TotalSize: Int64;
+begin
+  Result := HeaderSize + DataSize;
+end;
+
+{ THttpMultiPartFormStream }
+
+constructor THttpMultiPartFormStream.Create(
+  const AMultiPartFormData: THttpMultiPartFormData);
+begin
+  FMultiPartFormData := AMultiPartFormData;
+
+  _Init;
+end;
+
+function THttpMultiPartFormStream.Read(var ABuffer; ACount: Longint): Longint;
+var
+  LReadCount, LPos, LHeaderPos, LDataPos, LCount, LHeaderCount, LDataCount, LEndPos, LEndCount: Int64;
+  LFieldIndex: Integer;
+  LFieldEx: TFormFieldEx;
+  P: PByte;
+begin
+  Result := 0;
+  if (FPosition < 0) or (FPosition >= FSize) or (ACount <= 0) then Exit;
+
+  // 计算实际还能读取多少字节数据
+  if (ACount + FPosition <= FSize) then
+    LReadCount := ACount
+  else
+    LReadCount := FSize - FPosition;
+
+  Result := LReadCount;
+
+  P := @ABuffer;
+
+  {$region '从 Field 中读取数据'}
+  while (LReadCount > 0) do
+  begin
+    LFieldIndex := _GetFiledIndexByOffset(FPosition);
+    if (LFieldIndex < 0) then Break;
+
+    LFieldEx := FFormFieldExArray[LFieldIndex];
+
+    // 计算要读取的数据位于这个 Field 的偏移
+    LPos := FPosition - LFieldEx.Offset;
+
+    // 计算需要从这个 Field 中读取多少字节
+    LCount := Min(LFieldEx.TotalSize - LPos, LReadCount);
+
+    // 计算分别需要从 Header 和 Data 中读取多少字节
+    if (LPos < LFieldEx.HeaderSize) then
+    begin
+      LHeaderPos := LPos;
+      LDataPos := 0;
+
+      LHeaderCount := Min(LFieldEx.HeaderSize - LHeaderPos, LCount);
+      LDataCount := LCount - LHeaderCount;
+    end else
+    begin
+      LHeaderPos := -1;
+      LDataPos := LPos - LFieldEx.HeaderSize;
+
+      LHeaderCount := 0;
+      LDataCount := LCount - LHeaderCount;
+    end;
+
+    // 读取 Header
+    if (LHeaderCount > 0) then
+    begin
+      Move(LFieldEx.Header[LHeaderPos], P^, LHeaderCount);
+      Inc(P, LHeaderCount);
+      Dec(LReadCount, LHeaderCount);
+
+      Seek(LHeaderCount, soCurrent);
+    end;
+
+    // 读取 Data
+    if (LDataCount > 0) then
+    begin
+      LFieldEx.Field.Value.Position := LDataPos;
+      LFieldEx.Field.Value.Read(P^, LDataCount);
+      Inc(P, LDataCount);
+      Dec(LReadCount, LDataCount);
+
+      Seek(LDataCount, soCurrent);
+    end;
+  end;
+  {$endregion}
+
+  // 从尾巴读取数据
+  if (LReadCount > 0) then
+  begin
+    LEndPos := FPosition - FEndPos;
+    LEndCount := Min(Length(FMultiPartEnd) - LEndPos, LReadCount);
+
+    if (LEndCount > 0) then
+    begin
+      Move(FMultiPartEnd[LEndPos], P^, LEndCount);
+//      Inc(P, LEndCount);
+//      Dec(LReadCount, LEndCount);
+
+      Seek(LEndCount, soCurrent);
+    end;
+  end;
+end;
+
+function THttpMultiPartFormStream.Seek(const AOffset: Int64;
+  AOrigin: TSeekOrigin): Int64;
+begin
+  case AOrigin of
+    soBeginning: FPosition := AOffset;
+    soCurrent: Inc(FPosition, AOffset);
+    soEnd: FPosition := FSize + AOffset;
+  end;
+
+  if (FPosition < 0) then
+    FPosition := -1;
+
+  if (FPosition > FSize) then
+    FPosition := FSize;
+
+  Result := FPosition;
+end;
+
+function THttpMultiPartFormStream._GetFiledIndexByOffset(
+  const AOffset: Int64): Integer;
+var
+  LOffset: Int64;
+  I: Integer;
+begin
+  Result := -1;
+  if (AOffset < 0) or (AOffset >= FSize) then Exit;
+
+  LOffset := 0;
+
+  for I := 0 to High(FFormFieldExArray) do
+  begin
+    Inc(LOffset, FFormFieldExArray[I].TotalSize);
+    if (AOffset < LOffset) then Exit(I);
+  end;
+end;
+
+procedure THttpMultiPartFormStream._Init;
+var
+  I: Integer;
+  LFormFieldEx: TFormFieldEx;
+  LContentType, LPartHeaderStr: string;
+  LPartHeaderBytes, LBoundary: TBytes;
+  LOffset: Int64;
+begin
+  {
+  --boundary_value
+  Content-Disposition: form-data; name="text_field"
+
+  This is a simple text field.
+
+  --boundary_value
+  Content-Disposition: form-data; name="binary_data"
+  Content-Type: application/octet-stream
+
+  [Binary data goes here]
+
+  --boundary_value
+  Content-Disposition: form-data; name="file_field"; filename="example.txt"
+  Content-Type: text/plain
+
+  Contents of the example.txt file.
+
+  --boundary_value
+  Content-Disposition: form-data; name="image"; filename="image.jpg"
+  Content-Type: image/jpeg
+
+  [Binary image data]
+
+  --boundary_value--
+  }
+  // 检查 boundary, 如果没有则生成
+  if (FMultiPartFormData.Boundary = '') then
+  begin
+    Randomize;
+    FMultiPartFormData.Boundary := '--DCSFormBoundary'
+      + IntToHex(Random(MaxInt), 8)
+      + IntToHex(Random(MaxInt), 8);
+  end;
+
+  // 结尾数据
+  FMultiPartEnd := TArrayUtils<Byte>.Concat(FMultiPartFormData.FBoundaryBytes, [45, 45, 13, 10]);
+
+  LOffset := 0;
+  FSize := 0;
+  FPosition := 0;
+
+  {$region '生成Field的头'}
+  SetLength(FFormFieldExArray, FMultiPartFormData.Count);
+
+  for I := 0 to FMultiPartFormData.Count - 1 do
+  begin
+    LFormFieldEx.Offset := LOffset;
+    LFormFieldEx.Field := FMultiPartFormData.Items[I];
+
+    if (I = 0) then
+      LBoundary := FMultiPartFormData.FFirstBoundaryBytes
+    else
+      LBoundary := FMultiPartFormData.FBoundaryBytes;
+
+    // 'Content-Disposition: form-data; name="%s"; filename="%s"'#13#10 +
+    // 'Content-Type: %s'#13#10#13#10
+
+    LContentType := LFormFieldEx.Field.ContentType;
+
+    LPartHeaderStr := Format(
+      'Content-Disposition: form-data; name="%s"', [
+        LFormFieldEx.Field.Name
+      ]);
+    if (LFormFieldEx.Field.FileName <> '') then
+    begin
+      LPartHeaderStr := LPartHeaderStr
+        + Format('; filename="%s"', [LFormFieldEx.Field.FileName]);
+
+      if (LContentType = '') then
+        LContentType := TCrossHttpUtils.GetFileMIMEType(LFormFieldEx.Field.FileName);
+    end;
+    LPartHeaderStr := LPartHeaderStr + #13#10;
+
+    if (LContentType <> '') then
+    begin
+      LPartHeaderStr := LPartHeaderStr
+        + Format('Content-Type: %s', [LContentType])
+        + #13#10;
+    end;
+    LPartHeaderStr := LPartHeaderStr + #13#10;
+
+    LPartHeaderBytes := TEncoding.UTF8.GetBytes(LPartHeaderStr);
+
+    LFormFieldEx.Header := TArrayUtils<Byte>.Concat([
+      LBoundary, [13, 10], LPartHeaderBytes]);
+
+    Inc(FSize, LFormFieldEx.HeaderSize);
+    Inc(FSize, LFormFieldEx.DataSize);
+    Inc(LOffset, LFormFieldEx.TotalSize);
+
+    FFormFieldExArray[I] := LFormFieldEx;
+  end;
+  {$endregion}
+
+  FEndPos := LOffset;
+  Inc(FSize, Length(FMultiPartEnd));
+end;
+
 { TResponseCookies }
 
 procedure TResponseCookies.AddOrSet(const AName, AValue: string;
@@ -1836,7 +2406,7 @@ var
   I: Integer;
 begin
   for I := 0 to Count - 1 do
-    if SameText(Items[I].Name, AName) then Exit(I);
+    if TStrUtils.SameText(Items[I].Name, AName) then Exit(I);
   Result := -1;
 end;
 
@@ -2016,7 +2586,7 @@ constructor TSessions.Create(ANewGUIDFunc: TFunc<string>);
 begin
   FNewGUIDFunc := ANewGUIDFunc;
   FSessions := TDictionary<string, ISession>.Create;
-  FLocker := TMultiReadExclusiveWriteSynchronizer.Create;
+  FLocker := TReadWriteLock.Create;
   FSessionClass := TSession;
   CreateExpiredProcThread;
 end;
@@ -2039,7 +2609,6 @@ begin
   BeginWrite;
   FSessions.Clear;
   EndWrite;
-  FreeAndNil(FLocker);
   FreeAndNil(FSessions);
 
   inherited;
@@ -2092,32 +2661,8 @@ end;
 
 procedure TSessions.CreateExpiredProcThread;
 begin
-  TThread.CreateAnonymousThread(
+  TAnonymousThread.Create(
     procedure
-      procedure _ClearExpiredSessions;
-      var
-        LPair: TPair<string, ISession>;
-        LDelSessions: TArray<ISession>;
-      begin
-        BeginWrite;
-        try
-          BeforeClearExpiredSessions;
-
-          LDelSessions := nil;
-          for LPair in FSessions do
-          begin
-            if FShutdown then Break;
-
-            if OnCheckExpiredSession(LPair.Value) then
-              LDelSessions := LDelSessions + [LPair.Value];
-          end;
-          RemoveSessions(LDelSessions);
-
-          AfterClearExpiredSessions;
-        finally
-          EndWrite;
-        end;
-      end;
     var
       LWatch: TStopwatch;
     begin
@@ -2126,7 +2671,7 @@ begin
         LWatch := TStopwatch.StartNew;
         while not FShutdown do
         begin
-          // 每 5 分钟清理一次超时 Session
+          // 每 1 分钟清理一次超时 Session
           if (FExpire > 0) and (LWatch.Elapsed.TotalMinutes >= 1) then
           begin
             _ClearExpiredSessions;
@@ -2226,6 +2771,31 @@ end;
 procedure TSessions.SetSessionClass(const Value: TSessionClass);
 begin
   FSessionClass := Value;
+end;
+
+procedure TSessions._ClearExpiredSessions;
+var
+  LPair: TPair<string, ISession>;
+  LDelSessions: TArray<ISession>;
+begin
+  BeginWrite;
+  try
+    BeforeClearExpiredSessions;
+
+    LDelSessions := nil;
+    for LPair in FSessions do
+    begin
+      if FShutdown then Break;
+
+      if OnCheckExpiredSession(LPair.Value) then
+        LDelSessions := LDelSessions + [LPair.Value];
+    end;
+    RemoveSessions(LDelSessions);
+
+    AfterClearExpiredSessions;
+  finally
+    EndWrite;
+  end;
 end;
 
 end.

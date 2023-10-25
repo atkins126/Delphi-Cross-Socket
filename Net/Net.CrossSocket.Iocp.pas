@@ -9,12 +9,15 @@
 {******************************************************************************}
 unit Net.CrossSocket.Iocp;
 
+{$I zLib.inc}
+
 interface
 
 uses
-  System.SysUtils,
-  System.Classes,
-  Winapi.Windows,
+  SysUtils,
+  Classes,
+  Windows,
+
   Net.Winsock2,
   Net.Wship6,
   Net.SocketAPI,
@@ -61,7 +64,7 @@ type
       Overlapped: TWSAOverlapped;
       Buffer: TPerIoBufUnion;
       Action: TIocpAction;
-      Socket: THandle;
+      Socket: TSocket;
       CrossData: ICrossData;
       Callback: TCrossConnectionCallback;
     end;
@@ -81,10 +84,10 @@ type
     procedure _HandleRead(const APerIoData: PPerIoData);
     procedure _HandleWrite(const APerIoData: PPerIoData);
   protected
-    function CreateListen(const AOwner: TCrossSocketBase; const AListenSocket: THandle;
+    function CreateListen(const AOwner: TCrossSocketBase; const AListenSocket: TSocket;
       const AFamily, ASockType, AProtocol: Integer): ICrossListen; override;
-    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: THandle;
-      const AConnectType: TConnectType): ICrossConnection; override;
+    function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
+      const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback): ICrossConnection; override;
 
     procedure StartLoop; override;
     procedure StopLoop; override;
@@ -126,7 +129,7 @@ end;
 
 procedure TIocpCrossSocket._NewAccept(const AListen: ICrossListen);
 var
-  LClientSocket: THandle;
+  LClientSocket: TSocket;
   LPerIoData: PPerIoData;
   LBytes: Cardinal;
 begin
@@ -178,7 +181,7 @@ begin
     and (WSAGetLastError <> WSA_IO_PENDING) then
   begin
     {$IFDEF DEBUG}
-    _LogLastOsError('TIocpCrossSocket._NewReadZero.WSARecv');
+    _LogLastOsError(Format('TIocpCrossSocket._NewReadZero.WSARecv(socket=%d)', [AConnection.Socket]));
     {$ENDIF}
     _FreeIoData(LPerIoData);
     Exit(False);
@@ -191,7 +194,7 @@ procedure TIocpCrossSocket._HandleAccept(const APerIoData: PPerIoData);
 var
   LListen: ICrossListen;
   LConnection: ICrossConnection;
-  LClientSocket, LListenSocket: THandle;
+  LClientSocket, LListenSocket: TSocket;
 begin
   if (APerIoData.CrossData = nil) then Exit;
 
@@ -203,7 +206,7 @@ begin
   LListenSocket := LListen.Socket;
 
   // 不设置该参数, 会导致 getpeername 调用失败
-  if (TSocketAPI.SetSockOpt<THandle>(LClientSocket, SOL_SOCKET,
+  if (TSocketAPI.SetSockOpt<TSocket>(LClientSocket, SOL_SOCKET,
     SO_UPDATE_ACCEPT_CONTEXT, LListenSocket) < 0) then
   begin
     {$IFDEF DEBUG}
@@ -232,7 +235,7 @@ end;
 
 procedure TIocpCrossSocket._HandleConnect(const APerIoData: PPerIoData);
 var
-  LClientSocket: THandle;
+  LClientSocket: TSocket;
   LConnection: ICrossConnection;
   LSuccess: Boolean;
 
@@ -252,6 +255,9 @@ begin
 
   if (TSocketAPI.GetError(LClientSocket) <> 0) then
   begin
+    {$IFDEF DEBUG}
+    _LogLastOsError('TIocpCrossSocket._HandleConnect.GetError');
+    {$ENDIF}
     _Failed1;
     Exit;
   end;
@@ -260,18 +266,18 @@ begin
   if (TSocketAPI.SetSockOpt<Integer>(LClientSocket, SOL_SOCKET,
     SO_UPDATE_CONNECT_CONTEXT, 1) < 0) then
   begin
+    {$IFDEF DEBUG}
+    _LogLastOsError('TIocpCrossSocket._HandleConnect.SetSockOpt');
+    {$ENDIF}
     _Failed1;
     Exit;
   end;
 
-  LConnection := CreateConnection(Self, LClientSocket, ctConnect);
+  LConnection := CreateConnection(Self, LClientSocket, ctConnect, APerIoData.Callback);
   TriggerConnecting(LConnection);
   TriggerConnected(LConnection);
 
   LSuccess := _NewReadZero(LConnection);
-
-  if Assigned(APerIoData.Callback) then
-    APerIoData.Callback(LConnection, LSuccess);
 
   if not LSuccess then
     LConnection.Close;
@@ -362,7 +368,7 @@ procedure TIocpCrossSocket.StopLoop;
   procedure _FreeMissingPerIoDatas;
   var
     LBytes: Cardinal;
-    LSocket: THandle;
+    LSocket: TSocket;
     LPerIoData: PPerIoData;
     LConnection: ICrossConnection;
   begin
@@ -426,7 +432,7 @@ procedure TIocpCrossSocket.Connect(const AHost: string; const APort: Word;
 var
   LHints: TRawAddrInfo;
   P, LAddrInfo: PRawAddrInfo;
-  LSocket: THandle;
+  LSocket: TSocket;
 
   procedure _Failed1;
   begin
@@ -434,7 +440,7 @@ var
       ACallback(nil, False);
   end;
 
-  function _Connect(ASocket: THandle; AAddr: PRawAddrInfo): Boolean;
+  function _Connect(ASocket: TSocket; AAddr: PRawAddrInfo): Boolean;
     procedure _Failed2;
     begin
       if Assigned(ACallback) then
@@ -460,12 +466,18 @@ var
     end;
     if (TSocketAPI.Bind(ASocket, @LSockAddr.Addr, LSockAddr.AddrLen) < 0) then
     begin
+      {$IFDEF DEBUG}
+      _LogLastOsError('TIocpCrossSocket._Connect.Bind');
+      {$ENDIF}
       _Failed2;
       Exit(False);
     end;
 
     if (CreateIoCompletionPort(ASocket, FIocpHandle, ULONG_PTR(ASocket), 0) = 0) then
     begin
+      {$IFDEF DEBUG}
+      _LogLastOsError('TIocpCrossSocket._Connect.CreateIoCompletionPort');
+      {$ENDIF}
       _Failed2;
       Exit(False);
     end;
@@ -477,6 +489,9 @@ var
     if not ConnectEx(ASocket, AAddr.ai_addr, AAddr.ai_addrlen, nil, 0, LBytes, PWSAOverlapped(LPerIoData)) and
       (WSAGetLastError <> WSA_IO_PENDING) then
     begin
+      {$IFDEF DEBUG}
+      _LogLastOsError('TIocpCrossSocket._Connect.ConnectEx');
+      {$ENDIF}
       _FreeIoData(LPerIoData);
       _Failed2;
       Exit(False);
@@ -493,6 +508,9 @@ begin
   LAddrInfo := TSocketAPI.GetAddrInfo(AHost, APort, LHints);
   if (LAddrInfo = nil) then
   begin
+    {$IFDEF DEBUG}
+    _LogLastOsError('TIocpCrossSocket.Connect.GetAddrInfo');
+    {$ENDIF}
     _Failed1;
     Exit;
   end;
@@ -505,12 +523,19 @@ begin
         LAddrInfo.ai_protocol, nil, 0, WSA_FLAG_OVERLAPPED);
       if (LSocket = INVALID_SOCKET) then
       begin
+        {$IFDEF DEBUG}
+        _LogLastOsError('TIocpCrossSocket.Connect.WSASocket');
+        {$ENDIF}
         _Failed1;
         Exit;
       end;
 
       TSocketAPI.SetNonBlock(LSocket, True);
       SetKeepAlive(LSocket);
+
+      {$IFDEF DEBUG}
+      _Log('TIocpCrossSocket.Connect.WSASocket=%d', [LSocket]);
+      {$ENDIF}
 
       if _Connect(LSocket, LAddrInfo) then Exit;
 
@@ -520,17 +545,21 @@ begin
     TSocketAPI.FreeAddrInfo(P);
   end;
 
+  {$IFDEF DEBUG}
+  _LogLastOsError('TIocpCrossSocket.Connect.Unknown');
+  {$ENDIF}
   _Failed1;
 end;
 
 function TIocpCrossSocket.CreateConnection(const AOwner: TCrossSocketBase;
-  const AClientSocket: THandle; const AConnectType: TConnectType): ICrossConnection;
+  const AClientSocket: TSocket; const AConnectType: TConnectType;
+  const AConnectCb: TCrossConnectionCallback): ICrossConnection;
 begin
-  Result := TIocpConnection.Create(AOwner, AClientSocket, AConnectType);
+  Result := TIocpConnection.Create(AOwner, AClientSocket, AConnectType, AConnectCb);
 end;
 
 function TIocpCrossSocket.CreateListen(const AOwner: TCrossSocketBase;
-  const AListenSocket: THandle; const AFamily, ASockType, AProtocol: Integer): ICrossListen;
+  const AListenSocket: TSocket; const AFamily, ASockType, AProtocol: Integer): ICrossListen;
 begin
   Result := TIocpListen.Create(AOwner, AListenSocket, AFamily, ASockType, AProtocol);
 end;
@@ -540,7 +569,7 @@ procedure TIocpCrossSocket.Listen(const AHost: string; const APort: Word;
 var
   LHints: TRawAddrInfo;
   P, LAddrInfo: PRawAddrInfo;
-  LListenSocket: THandle;
+  LListenSocket: TSocket;
   LListen: ICrossListen;
   I: Integer;
 
@@ -599,11 +628,19 @@ begin
       if (LAddrInfo.ai_family = AF_INET6) then
         TSocketAPI.SetSockOpt<Integer>(LListenSocket, IPPROTO_IPV6, IPV6_V6ONLY, 1);
 
-      if (TSocketAPI.Bind(LListenSocket, LAddrInfo.ai_addr, LAddrInfo.ai_addrlen) < 0)
-        or (TSocketAPI.Listen(LListenSocket) < 0) then
+      if (TSocketAPI.Bind(LListenSocket, LAddrInfo.ai_addr, LAddrInfo.ai_addrlen) < 0) then
       begin
         {$IFDEF DEBUG}
         _LogLastOsError('TIocpCrossSocket.Listen.Bind');
+        {$ENDIF}
+        _Failed;
+        Exit;
+      end;
+
+      if (TSocketAPI.Listen(LListenSocket) < 0) then
+      begin
+        {$IFDEF DEBUG}
+        _LogLastOsError('TIocpCrossSocket.Listen.Listen');
         {$ENDIF}
         _Failed;
         Exit;
@@ -679,7 +716,7 @@ end;
 function TIocpCrossSocket.ProcessIoEvent: Boolean;
 var
   LBytes: Cardinal;
-  LSocket: THandle;
+  LSocket: TSocket;
   LPerIoData: PPerIoData;
   LConnection: ICrossConnection;
   {$IFDEF DEBUG}
@@ -722,6 +759,12 @@ begin
             _NewAccept(LPerIoData.CrossData as ICrossListen);
         end else
         begin
+          {$IFDEF DEBUG}
+          _LogLastOsError(
+            Format('TIocpCrossSocket.ProcessIoEvent.GetQueuedCompletionStatus.CrossDataNotNil(socket=%d, action=%d)',
+              [LPerIoData.Socket, Ord(LPerIoData.Action)])
+          );
+          {$ENDIF}
           if Assigned(LPerIoData.Callback) then
           begin
             if (LPerIoData.CrossData is TIocpConnection) then
@@ -736,6 +779,12 @@ begin
         end;
       end else
       begin
+        {$IFDEF DEBUG}
+        _LogLastOsError(
+          Format('TIocpCrossSocket.ProcessIoEvent.GetQueuedCompletionStatus.CrossDataIsNil(socket=%d, action=%d)',
+            [LPerIoData.Socket, Ord(LPerIoData.Action)])
+        );
+        {$ENDIF}
         if Assigned(LPerIoData.Callback) then
           LPerIoData.Callback(nil, False);
 
