@@ -98,6 +98,9 @@ const
   HEADER_WWW_AUTHENTICATE      = 'WWW-Authenticate';
   HEADER_X_METHOD_OVERRIDE     = 'x-method-override';
   HEADER_X_FORWARDED_FOR       = 'X-Forwarded-For';
+  HEADER_X_REAL_IP             = 'X-Real-IP';
+  HEADER_X_FORWARDED_HOST      = 'X-Forwarded-Host';
+  HEADER_X_FORWARDED_SERVER    = 'X-Forwarded-Server';
   {$ENDREGION}
 
   ZLIB_BUF_SIZE = 32768;
@@ -133,13 +136,13 @@ const
     (Code: 405; Text: 'Method Not Allowed'),
     (Code: 406; Text: 'Not Acceptable'),
     (Code: 407; Text: 'Proxy Authentication Required'),
-    (Code: 408; Text: 'Request Time-out'),
+    (Code: 408; Text: 'Request Timeout'),
     (Code: 409; Text: 'Conflict'),
     (Code: 410; Text: 'Gone'),
     (Code: 411; Text: 'Length Required'),
     (Code: 412; Text: 'Precondition Failed'),
     (Code: 413; Text: 'Request Entity Too Large'),
-    (Code: 414; Text: 'Request-URI Too Large'),
+    (Code: 414; Text: 'Request URI Too Large'),
     (Code: 415; Text: 'Unsupported Media Type'),
     (Code: 416; Text: 'Requested Range Not Satisfiable'),
     (Code: 417; Text: 'Expectation Failed'),
@@ -156,7 +159,7 @@ const
     (Code: 501; Text: 'Not Implemented'),
     (Code: 502; Text: 'Bad Gateway'),
     (Code: 503; Text: 'Service Unavailable'),
-    (Code: 504; Text: 'Gateway Time-out'),
+    (Code: 504; Text: 'Gateway Timeout'),
     (Code: 505; Text: 'HTTP Version Not Supported'),
     (Code: 506; Text: 'Variant Also Negotiates'),     // RFC 2295
     (Code: 507; Text: 'Insufficient Storage'),        // RFC 4918
@@ -1235,6 +1238,13 @@ type
 
     class function UrlEncode(const S: string; const ANoConversion: TSysCharSet = []): string; static;
     class function UrlDecode(const S: string): string; static;
+
+    // Delphi 12+ 编译器将NativeInt与Integer(目标32位)和Int64(目标64位)等同
+    {$IF DEFINED(DELPHI) AND (CompilerVersion < 36)}
+    class procedure AdjustOffsetCount(const ABodySize: NativeInt; var AOffset, ACount: NativeInt); overload; static;
+    {$ENDIF}
+    class procedure AdjustOffsetCount(const ABodySize: Integer; var AOffset, ACount: Integer); overload; static;
+    class procedure AdjustOffsetCount(const ABodySize: Int64; var AOffset, ACount: Int64); overload; static;
   end;
 
 implementation
@@ -1257,6 +1267,8 @@ var
   I, LCode: Integer;
   LValid: Boolean;
 begin
+  if (AInput = '') then Exit('');
+
   SetLength(Result, Length(AInput));
   LSp := PChar(AInput);
   LRp := PChar(Result);
@@ -1347,6 +1359,8 @@ class function TCrossHttpUtils.HtmlEncode(const AInput: string): string;
 var
   LSp, LRp: PChar;
 begin
+  if (AInput = '') then Exit('');
+
   SetLength(Result, Length(AInput) * 10);
   LSp := PChar(AInput);
   LRp := PChar(Result);
@@ -1394,6 +1408,95 @@ begin
     Result := (Pos(APath1, APath2) = 1);
 end;
 
+{$IF DEFINED(DELPHI) AND (CompilerVersion < 36)}
+class procedure TCrossHttpUtils.AdjustOffsetCount(const ABodySize: NativeInt;
+  var AOffset, ACount: NativeInt);
+begin
+  {$region '修正 AOffset'}
+  // 偏移为正数, 从头部开始计算偏移
+  if (AOffset >= 0) then
+  begin
+    AOffset := AOffset;
+    if (AOffset >= ABodySize) then
+      AOffset := ABodySize - 1;
+  end else
+  // 偏移为负数, 从尾部开始计算偏移
+  begin
+    AOffset := ABodySize + AOffset;
+    if (AOffset < 0) then
+      AOffset := 0;
+  end;
+  {$endregion}
+
+  {$region '修正 ACount'}
+  // ACount<=0表示需要处理所有数据
+  if (ACount <= 0) then
+    ACount := ABodySize;
+
+  if (ABodySize - AOffset < ACount) then
+    ACount := ABodySize - AOffset;
+  {$endregion}
+end;
+{$ENDIF}
+
+class procedure TCrossHttpUtils.AdjustOffsetCount(const ABodySize: Integer;
+  var AOffset, ACount: Integer);
+begin
+  {$region '修正 AOffset'}
+  // 偏移为正数, 从头部开始计算偏移
+  if (AOffset >= 0) then
+  begin
+    AOffset := AOffset;
+    if (AOffset >= ABodySize) then
+      AOffset := ABodySize - 1;
+  end else
+  // 偏移为负数, 从尾部开始计算偏移
+  begin
+    AOffset := ABodySize + AOffset;
+    if (AOffset < 0) then
+      AOffset := 0;
+  end;
+  {$endregion}
+
+  {$region '修正 ACount'}
+  // ACount<=0表示需要处理所有数据
+  if (ACount <= 0) then
+    ACount := ABodySize;
+
+  if (ABodySize - AOffset < ACount) then
+    ACount := ABodySize - AOffset;
+  {$endregion}
+end;
+
+class procedure TCrossHttpUtils.AdjustOffsetCount(const ABodySize: Int64;
+  var AOffset, ACount: Int64);
+begin
+  {$region '修正 AOffset'}
+  // 偏移为正数, 从头部开始计算偏移
+  if (AOffset >= 0) then
+  begin
+    AOffset := AOffset;
+    if (AOffset >= ABodySize) then
+      AOffset := ABodySize - 1;
+  end else
+  // 偏移为负数, 从尾部开始计算偏移
+  begin
+    AOffset := ABodySize + AOffset;
+    if (AOffset < 0) then
+      AOffset := 0;
+  end;
+  {$endregion}
+
+  {$region '修正 ACount'}
+  // ACount<=0表示需要处理所有数据
+  if (ACount <= 0) then
+    ACount := ABodySize;
+
+  if (ABodySize - AOffset < ACount) then
+    ACount := ABodySize - AOffset;
+  {$endregion}
+end;
+
 class function TCrossHttpUtils.CombinePath(const APath1,
   APath2: string; const APathDelim: Char): string;
 begin
@@ -1403,7 +1506,7 @@ end;
 class function TCrossHttpUtils.ExtractUrl(const AUrl: string; out AProtocol,
   AHost: string; out APort: Word; out APath: string): Boolean;
 var
-  LProtocolIndex, LIPv6Index, LPortIndex, LPathIndex: Integer;
+  LProtocolIndex, LIPv6Index, LPortIndex, LPathIndex, LQueryIndex: Integer;
   LPortStr: string;
 begin
   // http://www.test.com/abc
@@ -1440,6 +1543,9 @@ begin
 
     // 找 / 定位路径
     LPathIndex := AUrl.IndexOf('/', LIPv6Index + 1);
+
+    // 找 ? 定位参数
+    LQueryIndex := AUrl.IndexOf('?', LIPv6Index + 1);
   end else
   begin
     // 找 : 定位端口
@@ -1447,10 +1553,18 @@ begin
 
     // 找 / 定位路径
     LPathIndex := AUrl.IndexOf('/', LProtocolIndex);
+
+    // 找 ? 定位参数
+    LQueryIndex := AUrl.IndexOf('?', LProtocolIndex);
   end;
 
   if (LPathIndex < 0) then
-    LPathIndex := Length(AUrl);
+  begin
+    if (LQueryIndex >= 0) then
+      LPathIndex := LQueryIndex
+    else
+      LPathIndex := Length(AUrl);
+  end;
 
   if (LPortIndex >= 0) then
   begin
@@ -1475,7 +1589,9 @@ begin
   // 提取路径
   APath := AUrl.Substring(LPathIndex, MaxInt);
   if (APath = '') then
-    APath := '/';
+    APath := '/'
+  else if (APath[1] <> '/') then
+    APath := '/' + APath;
 
   Result := (AHost <> '');
 end;
@@ -1532,6 +1648,8 @@ var
   P, PEnd: PChar;
   H, L: Byte;
 begin
+  if (S = '') then Exit('');
+
   I := 0;
   LStrLen := Length(S);
   P := PChar(S);
@@ -1541,6 +1659,7 @@ begin
   while (P < PEnd) do
   begin
     case Ord(P^) of
+      // 兼容早期的编码
       Ord('+'):
         begin
           LUTF8Bytes[I] := Ord(' ');
@@ -1591,6 +1710,8 @@ var
   C: Byte;
   P: PChar;
 begin
+  if (S = '') then Exit('');
+  
   // 先将 unicode 字符串编码为 utf8 字节数组
   LUTF8Bytes := TEncoding.UTF8.GetBytes(S);
 
@@ -1604,18 +1725,16 @@ begin
   begin
     C := LUTF8Bytes[I];
     case C of
+      // https://datatracker.ietf.org/doc/html/rfc3986
+      // RFC 3986 中明确定义了未保留字(无需编码)包含以下这些
+      //   字母数字：大小写英文字母(A-Z, a-z)和数字(0-9)。
+      //   特殊字符：连字符(-)，下划线(_)，点号(.)，和波浪号(~)。
       Ord('0')..Ord('9'),
       Ord('a')..Ord('z'),
       Ord('A')..Ord('Z'),
-      Ord('_'), Ord('-'), Ord('.'), Ord('~'):
+      Ord('-'), Ord('_'), Ord('.'), Ord('~'):
         begin
           P^ := Char(C);
-          Inc(P);
-        end;
-
-      Ord(' '):
-        begin
-          P^ := '+';
           Inc(P);
         end;
     else
