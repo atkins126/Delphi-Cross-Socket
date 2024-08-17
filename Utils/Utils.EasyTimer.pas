@@ -6,15 +6,16 @@ interface
 
 uses
   SysUtils,
-  {$IFDEF DELPHI}
-  Diagnostics,
-  {$ELSE}
+  Classes,
+  DateUtils,
+  {$IFDEF FPC}
   DTF.Types,
-  DTF.Diagnostics,
   {$ENDIF}
 
   Utils.EasyThread,
   Utils.DateTime,
+  Utils.SimpleWatch,
+  Utils.Utils,
   Utils.Logger;
 
 type
@@ -22,13 +23,19 @@ type
   ['{3AA98783-0800-4C4E-AA3F-037FC5307196}']
     function GetName: string;
     function GetPaused: Boolean;
+    function GetFinished: Boolean;
+    function GetLastTick: UInt64;
     procedure SetPaused(const AValue: Boolean);
 
     procedure Terminate;
     procedure WaitFor;
 
+    function IsTimeout(const ATimeout: Integer): Boolean;
+
     property Name: string read GetName;
     property Paused: Boolean read GetPaused write SetPaused;
+    property Finished: Boolean read GetFinished;
+    property LastTick: UInt64 read GetLastTick;
   end;
 
   TEasyTimer = class(TInterfacedObject, IEasyTimer)
@@ -36,10 +43,13 @@ type
     FEasyThread: IEasyThread;
     FName: string;
     FDelay, FInterval: Int64;
-    FPaused: Boolean;
+    FPaused, FFinished: Boolean;
+    FTickWatch: TSimpleWatch;
 
     function GetName: string;
     function GetPaused: Boolean;
+    function GetFinished: Boolean;
+    function GetLastTick: UInt64;
     procedure SetPaused(const AValue: Boolean);
 
     class function _FullDateTime(const ADateTime: TDateTime): TDateTime; static;
@@ -56,8 +66,12 @@ type
     procedure Terminate;
     procedure WaitFor;
 
+    function IsTimeout(const ATimeout: Integer): Boolean;
+
     property Name: string read GetName;
     property Paused: Boolean read GetPaused write SetPaused;
+    property Finished: Boolean read GetFinished;
+    property LastTick: UInt64 read GetLastTick;
   end;
 
 implementation
@@ -75,51 +89,59 @@ begin
   FInterval := AInterval;
   LFirstRun := True;
   FPaused := APaused;
+  FFinished := False;
+  FTickWatch.Reset;
 
   FEasyThread := TEasyThread.Create(
     procedure(const AEasyThread: IEasyThread)
     var
-      LWatch: TStopwatch;
+      LWatch: TSimpleWatch;
+      LStackTrace: string;
     begin
-      LWatch := TStopwatch.StartNew;
+      try
+        LWatch.Reset;
 
-      while not AEasyThread.Terminated do
-      begin
-        if not FPaused then
+        while not AEasyThread.Terminated do
         begin
-          LElMSec := LWatch.ElapsedMilliseconds;
+          try
+            if not FPaused then
+            begin
+              LElMSec := LWatch.ElapsedMilliseconds;
 
-          if (LFirstRun and (LElMSec >= FDelay)) or
-            (not LFirstRun and (LElMSec >= FInterval)) then
-          begin
-            try
-              LFirstRun := False;
-
-              if Assigned(AProc) then
-                AProc();
-            except
-              on e: Exception do
+              if (LFirstRun and (LElMSec >= FDelay)) or
+                (not LFirstRun and (LElMSec >= FInterval)) then
               begin
-                if not (e is EAbort) then
-                begin
-                  AppendLog('执行EasyTimer[%s]出现异常: %s, %s', [
-                    FName, e.ClassName, e.Message
-                  ]);
+                LFirstRun := False;
 
-                  {$IFDEF DELPHI}
-                  if (e.StackTrace <> '') then
-                    AppendLog('异常调用堆栈:%s', [e.StackTrace]);
-                  {$ENDIF}
+                try
+                  if Assigned(AProc) then
+                    AProc();
+                finally
+                  LWatch.Reset;
                 end;
               end;
             end;
+          except
+            on e: Exception do
+            begin
+              if not (e is EAbort) then
+              begin
+                AppendLog('执行EasyTimer[%s]出现异常: %s, %s', [
+                  FName, e.ClassName, e.Message
+                ]);
 
-            LWatch.Reset;
-            LWatch.Start;
+                LStackTrace := TUtils.GetStackTrace;
+                if (LStackTrace <> '') then
+                  AppendLog('异常调用堆栈:%s', [LStackTrace]);
+              end;
+            end;
           end;
-        end;
 
-        Sleep(10);
+          FTickWatch.Reset;
+          Sleep(10);
+        end;
+      finally
+        FFinished := True;
       end;
     end);
 end;
@@ -147,6 +169,16 @@ begin
   inherited;
 end;
 
+function TEasyTimer.GetFinished: Boolean;
+begin
+  Result := FFinished;
+end;
+
+function TEasyTimer.GetLastTick: UInt64;
+begin
+  Result := FTickWatch.LastTime.ToMilliseconds;
+end;
+
 function TEasyTimer.GetName: string;
 begin
   Result := FName;
@@ -155,6 +187,14 @@ end;
 function TEasyTimer.GetPaused: Boolean;
 begin
   Result := FPaused;
+end;
+
+function TEasyTimer.IsTimeout(const ATimeout: Integer): Boolean;
+begin
+  Result := False;
+  if (ATimeout <= 0) then Exit;
+
+  Result := (FTickWatch.ElapsedMilliseconds > ATimeout);
 end;
 
 procedure TEasyTimer.SetPaused(const AValue: Boolean);

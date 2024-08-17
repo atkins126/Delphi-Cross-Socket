@@ -73,10 +73,10 @@ type
   TWsOnCommand = reference to procedure(const AOpCode: Byte; const AData: TBytes);
   TWsOnMessage = reference to procedure(const AType: TWsMessageType; const AData: TBytes);
 
-  TWebSocketParser = class
+  TCrossWebSocketParser = class
   private
     FWsFrameState: TWsFrameParseState;
-    FWsFrameHeader, FWsMessageBody: TBytesStream;
+    FWsFrameHeader, FWsMessageBody: TMemoryStream;
     FWsFIN: Boolean;
     FWsOpCode: Byte;
     FWsMask: Boolean;
@@ -91,7 +91,6 @@ type
 
     procedure _ResetFrameHeader;
     procedure _ResetRequest;
-
   protected
     procedure TriggerCommand(const AOpCode: Byte; const AData: TBytes);
     procedure TriggerMessage(const AType: TWsMessageType; const AData: TBytes);
@@ -99,7 +98,7 @@ type
     constructor Create(const AOnCommand: TWsOnCommand; const AOnMessage: TWsOnMessage);
     destructor Destroy; override;
 
-    procedure Decode(ABuf: Pointer; ALen: Integer);
+    procedure Decode(var ABuf: Pointer; var ALen: Integer);
 
     class function OpCodeToReqType(AOpCode: Byte): TWsMessageType; static;
     class function MakeFrameData(AOpCode: Byte; AFin: Boolean; AMaskKey: Cardinal; AData: Pointer; ADataSize: UInt64): TBytes; static;
@@ -110,20 +109,20 @@ type
 
 implementation
 
-{ TWebSocketParser }
+{ TCrossWebSocketParser }
 
-constructor TWebSocketParser.Create(const AOnCommand: TWsOnCommand;
+constructor TCrossWebSocketParser.Create(const AOnCommand: TWsOnCommand;
   const AOnMessage: TWsOnMessage);
 begin
   FOnCommand := AOnCommand;
   FOnMessage := AOnMessage;
 
-  FWsFrameHeader := TBytesStream.Create(nil);
-  FWsMessageBody := TBytesStream.Create(nil);
+  FWsFrameHeader := TMemoryStream.Create;
+  FWsMessageBody := TMemoryStream.Create;
   _ResetRequest;
 end;
 
-destructor TWebSocketParser.Destroy;
+destructor TCrossWebSocketParser.Destroy;
 begin
   FreeAndNil(FWsFrameHeader);
   FreeAndNil(FWsMessageBody);
@@ -131,13 +130,14 @@ begin
   inherited;
 end;
 
-procedure TWebSocketParser.Decode(ABuf: Pointer; ALen: Integer);
+procedure TCrossWebSocketParser.Decode(var ABuf: Pointer; var ALen: Integer);
 var
-  PBuf: PByte;
+  PBuf, PHeader: PByte;
   LByte: Byte;
   LMessageData: TBytes;
 begin
   PBuf := ABuf;
+
   while (ALen > 0) do
   begin
     // 使用循环处理粘包, 比递归调用节省资源
@@ -150,21 +150,23 @@ begin
             Dec(ALen);
             Inc(PBuf);
 
+            PHeader := FWsFrameHeader.Memory;
+
             if (FWsFrameHeader.Size = 2) then
             begin
               // 第1个字节最高位为 FIN 状态
-              FWsFIN := (FWsFrameHeader.Bytes[0] and $80 <> 0);
+              FWsFIN := (PHeader[0] and $80 <> 0);
 
               // 第1个字节低4位为 opcode 状态
-              LByte := FWsFrameHeader.Bytes[0] and $0F;
+              LByte := PHeader[0] and $0F;
               if (LByte <> WS_OP_CONTINUATION) then
                 FWsOpCode := LByte;
 
               // 第2个字节最高位为 MASK 状态
-              FWsMask := (FWsFrameHeader.Bytes[1] and $80 <> 0);
+              FWsMask := (PHeader[1] and $80 <> 0);
 
               // 第2个字节低7位为 payload len
-              FWsPayload := FWsFrameHeader.Bytes[1] and $7F;
+              FWsPayload := PHeader[1] and $7F;
 
               FWsHeaderSize := 2;
               if (FWsPayload < 126) then
@@ -174,7 +176,10 @@ begin
               else if (FWsPayload = 127) then
                 Inc(FWsHeaderSize, 8);
               if FWsMask then
+              begin
                 Inc(FWsHeaderSize, 4);
+                FWsMaskKeyShift := 0;
+              end;
             end;
 
             if (FWsFrameHeader.Size = FWsHeaderSize) then
@@ -183,20 +188,20 @@ begin
 
               // 保存 mask key
               if FWsMask then
-                Move(PCardinal(UIntPtr(FWsFrameHeader.Memory) + FWsHeaderSize - 4)^, FWsMaskKey, 4);
+                Move((PByte(FWsFrameHeader.Memory) + FWsHeaderSize - 4)^, FWsMaskKey, 4);
 
               if (FWsPayload = 126) then
-                FWsBodySize := FWsFrameHeader.Bytes[3]
-                  + Word(FWsFrameHeader.Bytes[2]) shl 8
+                FWsBodySize := PHeader[3]
+                  + Word(PHeader[2]) shl 8
               else if (FWsPayload = 127) then
-                FWsBodySize := FWsFrameHeader.Bytes[9]
-                  + UInt64(FWsFrameHeader.Bytes[8]) shl 8
-                  + UInt64(FWsFrameHeader.Bytes[7]) shl 16
-                  + UInt64(FWsFrameHeader.Bytes[6]) shl 24
-                  + UInt64(FWsFrameHeader.Bytes[5]) shl 32
-                  + UInt64(FWsFrameHeader.Bytes[4]) shl 40
-                  + UInt64(FWsFrameHeader.Bytes[3]) shl 48
-                  + UInt64(FWsFrameHeader.Bytes[2]) shl 56
+                FWsBodySize := PHeader[9]
+                  + UInt64(PHeader[8]) shl 8
+                  + UInt64(PHeader[7]) shl 16
+                  + UInt64(PHeader[6]) shl 24
+                  + UInt64(PHeader[5]) shl 32
+                  + UInt64(PHeader[4]) shl 40
+                  + UInt64(PHeader[3]) shl 48
+                  + UInt64(PHeader[2]) shl 56
                   ;
 
               // 接收完一帧
@@ -249,8 +254,9 @@ begin
     // 一个完整的 WebSocket 数据帧接收完毕
     if (FWsFrameState = wsDone) then
     begin
-      LMessageData := FWsMessageBody.Bytes;
       SetLength(LMessageData, FWsMessageBody.Size);
+      FWsMessageBody.Position := 0;
+      FWsMessageBody.ReadBuffer(LMessageData, FWsMessageBody.Size);
       _ResetRequest;
 
       case FWsOpCode of
@@ -261,13 +267,16 @@ begin
       end;
     end;
   end;
+
+  ABuf := PBuf;
 end;
 
-class function TWebSocketParser.MakeFrameData(AOpCode: Byte; AFin: Boolean;
+class function TCrossWebSocketParser.MakeFrameData(AOpCode: Byte; AFin: Boolean;
   AMaskKey: Cardinal; AData: Pointer; ADataSize: UInt64): TBytes;
 var
   LPayload: Byte;
-  LHeaderSize, LDataSize: Integer;
+  LHeaderSize, LDataSize, I: Integer;
+  LMaskKey: PByte;
 begin
   if (AData <> nil) and (ADataSize > 0) then
     LDataSize := ADataSize
@@ -321,10 +330,18 @@ begin
     Move(AMaskKey, Result[LHeaderSize - 4], 4);
 
   if (LDataSize > 0) then
-    Move(AData^, Result[LHeaderSize], LDataSize);
+  begin
+    if (AMaskKey <> 0) then
+    begin
+      LMaskKey := PByte(@AMaskKey);
+      for I := 0 to LDataSize - 1 do
+        Result[LHeaderSize + I] := PByte(AData)[I] xor LMaskKey[I mod 4];
+    end else
+      Move(AData^, Result[LHeaderSize], LDataSize);
+  end;
 end;
 
-class function TWebSocketParser.MakeSecWebSocketAccept(
+class function TCrossWebSocketParser.MakeSecWebSocketAccept(
   const ASecWebSocketKey: string): string;
 begin
   Result := TBase64Utils.Encode(
@@ -332,7 +349,7 @@ begin
   );
 end;
 
-class function TWebSocketParser.NewSecWebSocketKey: string;
+class function TCrossWebSocketParser.NewSecWebSocketKey: string;
 var
   LRand: Int64;
 begin
@@ -341,7 +358,7 @@ begin
   Result := TBase64Utils.Encode(TUtils.BinToHex(@LRand, SizeOf(Int64)));
 end;
 
-class function TWebSocketParser.OpCodeToReqType(AOpCode: Byte): TWsMessageType;
+class function TCrossWebSocketParser.OpCodeToReqType(AOpCode: Byte): TWsMessageType;
 begin
   case AOpCode of
     WS_OP_TEXT: Exit(wtText);
@@ -351,32 +368,33 @@ begin
   end;
 end;
 
-procedure TWebSocketParser.TriggerCommand(const AOpCode: Byte;
+procedure TCrossWebSocketParser.TriggerCommand(const AOpCode: Byte;
   const AData: TBytes);
 begin
   if Assigned(FOnCommand) then
     FOnCommand(AOpCode, AData);
 end;
 
-procedure TWebSocketParser.TriggerMessage(const AType: TWsMessageType;
+procedure TCrossWebSocketParser.TriggerMessage(const AType: TWsMessageType;
   const AData: TBytes);
 begin
   if Assigned(FOnMessage) then
     FOnMessage(AType, AData);
 end;
 
-procedure TWebSocketParser._ResetFrameHeader;
+procedure TCrossWebSocketParser._ResetFrameHeader;
 begin
   FWsFrameState := wsHeader;
   FWsFrameHeader.Clear;
   FWsMaskKeyShift := 0;
 end;
 
-procedure TWebSocketParser._ResetRequest;
+procedure TCrossWebSocketParser._ResetRequest;
 begin
   FWsFrameState := wsHeader;
   FWsFrameHeader.Clear;
   FWsMessageBody.Clear;
+  FWsHeaderSize := 0;
   FWsMaskKeyShift := 0;
 end;
 

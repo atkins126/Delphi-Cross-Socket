@@ -223,6 +223,10 @@ type
   /// </summary>
   ICrossWebSocketServer = interface(ICrossHttpServer)
   ['{FF008E22-9938-4DC4-9421-083DA9EFFCDC}']
+    function GetMaskingKey: Cardinal;
+
+    procedure SetMaskingKey(const AValue: Cardinal);
+
     /// <summary>
     ///   WebSocket连接建立时触发
     /// </summary>
@@ -262,6 +266,13 @@ type
     ///   hui'diaohanshu
     /// </param>
     function OnPong(const ACallback: TWsServerOnPong): ICrossWebSocketServer;
+
+    {$REGION 'Documentation'}
+    /// <summary>
+    ///   Masking-Key
+    /// </summary>
+    {$ENDREGION}
+    property MaskingKey: Cardinal read GetMaskingKey write SetMaskingKey;
   end;
 
   TCrossWebSocketConnection = class(TCrossHttpConnection, ICrossWebSocketConnection)
@@ -269,10 +280,10 @@ type
     TWsFrameParseState = (wsHeader, wsBody, wsDone);
   private
     FIsWebSocket: Boolean;
-    FWsParser: TWebSocketParser;
+    FWsParser: TCrossWebSocketParser;
     FWsSendClose: Integer;
 
-    procedure _WebSocketRecv(ABuf: Pointer; ALen: Integer);
+    procedure _WebSocketRecv(var ABuf: Pointer; var ALen: Integer);
 
     {$region '内部发送方法'}
     procedure _WsSend(AOpCode: Byte; AFin: Boolean; AData: Pointer; ACount: NativeInt;
@@ -288,8 +299,8 @@ type
     procedure _RespondPong(const AData: TBytes);
     procedure _RespondClose;
   protected
-    procedure TriggerWsRequest(ARequestType: TWsMessageType;
-      const ARequestData: TBytes); virtual;
+    procedure ParseRecvData(var ABuf: Pointer; var ALen: Integer); override;
+    procedure ReleaseRequest; override;
   public
     constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
       const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback); override;
@@ -299,6 +310,7 @@ type
     procedure WsClose;
     procedure WsPing;
 
+    procedure WsSend(const AData: Pointer; const ACount: NativeInt; const ACallback: TWsServerCallback = nil); overload;
     procedure WsSend(const AData; const ACount: NativeInt; const ACallback: TWsServerCallback = nil); overload;
     procedure WsSend(const AData: TBytes; const AOffset, ACount: NativeInt; const ACallback: TWsServerCallback = nil); overload;
     procedure WsSend(const AData: TBytes; const ACallback: TWsServerCallback = nil); overload;
@@ -340,6 +352,7 @@ type
   }
   TCrossWebSocketServer = class(TCrossHttpServer, ICrossWebSocketServer)
   private
+    FMaskingKey: Cardinal;
     FOnOpenEvents: TList<TWsServerOnOpen>;
     FOnOpenEventsLock: ILock;
 
@@ -366,15 +379,15 @@ type
     procedure _OnPing(const AConnection: ICrossWebSocketConnection);
     procedure _OnPong(const AConnection: ICrossWebSocketConnection);
   protected
+    function GetMaskingKey: Cardinal;
+
+    procedure SetMaskingKey(const AValue: Cardinal);
+  protected
     function CreateConnection(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
       const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback): ICrossConnection; override;
-    procedure LogicReceived(const AConnection: ICrossConnection; const ABuf: Pointer; const ALen: Integer); override;
     procedure LogicDisconnected(const AConnection: ICrossConnection); override;
 
     procedure DoOnRequest(const AConnection: ICrossHttpConnection); override;
-
-    procedure TriggerWsRequest(const AConnection: ICrossWebSocketConnection;
-      const ARequestType: TWsMessageType; const ARequestData: TBytes); virtual;
   public
     constructor Create(const AIoThreads: Integer; const ASsl: Boolean); override;
     destructor Destroy; override;
@@ -385,6 +398,8 @@ type
 
     function OnPing(const ACallback: TWsServerOnPing): ICrossWebSocketServer;
     function OnPong(const ACallback: TWsServerOnPong): ICrossWebSocketServer;
+
+    property MaskingKey: Cardinal read GetMaskingKey write SetMaskingKey;
   end;
 
 implementation
@@ -397,7 +412,7 @@ constructor TCrossWebSocketConnection.Create(const AOwner: TCrossSocketBase;
 begin
   inherited Create(AOwner, AClientSocket, AConnectType, AConnectCb);
 
-  FWsParser := TWebSocketParser.Create(
+  FWsParser := TCrossWebSocketParser.Create(
     procedure(const AOpCode: Byte; const AData: TBytes)
     var
       LWsServer: TCrossWebSocketServer;
@@ -453,10 +468,29 @@ begin
   Result := FIsWebSocket;
 end;
 
-procedure TCrossWebSocketConnection.TriggerWsRequest(
-  ARequestType: TWsMessageType; const ARequestData: TBytes);
+procedure TCrossWebSocketConnection.ParseRecvData(var ABuf: Pointer;
+  var ALen: Integer);
 begin
-  TCrossWebSocketServer(Owner).TriggerWsRequest(Self, ARequestType, ARequestData);
+  while (ALen > 0) do
+  begin
+    if not FIsWebSocket then
+      inherited ParseRecvData(ABuf, ALen);
+
+    if (ALen > 0) and FIsWebSocket then
+      _WebSocketRecv(ABuf, ALen);
+  end;
+end;
+
+procedure TCrossWebSocketConnection.ReleaseRequest;
+begin
+  if not FIsWebSocket then
+    inherited ReleaseRequest;
+end;
+
+procedure TCrossWebSocketConnection.WsSend(const AData: Pointer;
+  const ACount: NativeInt; const ACallback: TWsServerCallback);
+begin
+  _WsSend(WS_OP_BINARY, True, AData, ACount, ACallback);
 end;
 
 procedure TCrossWebSocketConnection.WsSend(const AData; const ACount: NativeInt;
@@ -607,8 +641,8 @@ begin
   _WsSend(WS_OP_PING, True, nil, 0);
 end;
 
-procedure TCrossWebSocketConnection._WebSocketRecv(ABuf: Pointer;
-  ALen: Integer);
+procedure TCrossWebSocketConnection._WebSocketRecv(var ABuf: Pointer;
+  var ALen: Integer);
 begin
   FWsParser.Decode(ABuf, ALen);
 end;
@@ -641,7 +675,12 @@ begin
   // 将数据和头打包到一起发送
   // 这是因为如果分开发送, 在多线程环境多个不同的线程数据可能会出现交叉
   // 会引起数据与头部混乱
-  LWsFrameData := TWebSocketParser.MakeFrameData(AOpCode, AFin, 0, AData, ACount);
+  LWsFrameData := TCrossWebSocketParser.MakeFrameData(
+    AOpCode,
+    AFin,
+    (Owner as ICrossWebSocketServer).MaskingKey,
+    AData,
+    ACount);
 
   SendBytes(LWsFrameData,
     procedure(const AConnection: ICrossConnection; const ASuccess: Boolean)
@@ -735,18 +774,6 @@ begin
     inherited;
 end;
 
-procedure TCrossWebSocketServer.LogicReceived(const AConnection: ICrossConnection;
-  const ABuf: Pointer; const ALen: Integer);
-var
-  LConnection: ICrossWebSocketConnection;
-begin
-  LConnection := AConnection as ICrossWebSocketConnection;
-  if LConnection.IsWebSocket then
-    (LConnection as TCrossWebSocketConnection)._WebSocketRecv(ABuf, ALen)
-  else
-    inherited;
-end;
-
 function TCrossWebSocketServer.OnClose(const ACallback: TWsServerOnClose): ICrossWebSocketServer;
 begin
   FOnCloseEventsLock.Enter;
@@ -809,11 +836,9 @@ begin
   Result := Self;
 end;
 
-procedure TCrossWebSocketServer.TriggerWsRequest(
-  const AConnection: ICrossWebSocketConnection; const ARequestType: TWsMessageType;
-  const ARequestData: TBytes);
+procedure TCrossWebSocketServer.SetMaskingKey(const AValue: Cardinal);
 begin
-  _OnMessage(AConnection, ARequestType, ARequestData);
+  FMaskingKey := AValue;
 end;
 
 procedure TCrossWebSocketServer._OnClose(
@@ -920,7 +945,7 @@ begin
   AConnection.Response.Header[HEADER_UPGRADE] := WEBSOCKET;
   AConnection.Response.Header[HEADER_CONNECTION] := HEADER_UPGRADE;
   AConnection.Response.Header[HEADER_SEC_WEBSOCKET_ACCEPT] :=
-    TWebSocketParser.MakeSecWebSocketAccept(AConnection.Request.Header[HEADER_SEC_WEBSOCKET_KEY]);
+    TCrossWebSocketParser.MakeSecWebSocketAccept(AConnection.Request.Header[HEADER_SEC_WEBSOCKET_KEY]);
   AConnection.Response.SendStatus(101, '',
     procedure(const AConnection: ICrossConnection; const ASuccess: Boolean)
     begin
@@ -939,8 +964,12 @@ procedure TCrossWebSocketServer.DoOnRequest(
   const AConnection: ICrossHttpConnection);
 var
   LConnection: ICrossWebSocketConnection;
+  LConnectionObj: TCrossWebSocketConnection;
 begin
   LConnection := AConnection as ICrossWebSocketConnection;
+  LConnectionObj := LConnection as TCrossWebSocketConnection;
+
+  if LConnectionObj.FIsWebSocket then Exit;
 
   {
     GET /websocket-endpoint HTTP/1.1
@@ -954,7 +983,7 @@ begin
   if ContainsText(AConnection.Request.Header[HEADER_UPGRADE], WEBSOCKET)
     and ContainsText(AConnection.Request.Header[HEADER_CONNECTION], HEADER_UPGRADE) then
   begin
-    (LConnection as TCrossWebSocketConnection).FIsWebSocket := True;
+    LConnectionObj.FIsWebSocket := True;
     _WebSocketHandshake(LConnection,
       procedure(const AConnection: ICrossWebSocketConnection; const ASuccess: Boolean)
       begin
@@ -963,6 +992,11 @@ begin
       end);
   end else
     inherited;
+end;
+
+function TCrossWebSocketServer.GetMaskingKey: Cardinal;
+begin
+  Result := FMaskingKey;
 end;
 
 end.

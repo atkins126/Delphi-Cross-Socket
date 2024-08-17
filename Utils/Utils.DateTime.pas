@@ -22,6 +22,13 @@ uses
   Types,
   Math;
 
+const
+  ShortDayNamesEnglish :array[1..7] of string =
+    ('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat');
+  ShortMonthNamesEnglish :array[1..12] of string =
+    ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec');
+
 type
   TDateTimeHelper = record helper for TDateTime
   private const
@@ -159,6 +166,8 @@ type
     function ToLocalTime: TDateTime; inline;
     function ToTimeStamp: TTimeStamp; inline;
   end;
+
+procedure InitDefaultFormatSettings;
 
 implementation
 
@@ -543,6 +552,7 @@ var
   LOffset: TDateTime;
   LYear, LMonth, LDay, LHour, LMinute, LSecond, LMilliseconds: Word;
 begin
+  // 2015-02-01T16:08:19.202Z
   DecodeDate(Self, LYear, LMonth, LDay);
   DecodeTime(Self, LHour, LMinute, LSecond, LMilliseconds);
   Result := Format('%.4d-%.2d-%.2dT%.2d:%.2d:%.2d.%d', [LYear, LMonth, LDay, LHour, LMinute, LSecond, LMilliseconds]);
@@ -583,22 +593,36 @@ end;
 
 function TDateTimeHelper.ToRFC1123(const AIsUtcDateTime: Boolean): string;
 const
-  ShortDayNamesEnglish :array[1..7] of string =
-    ('Mon','Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun');
-  ShortMonthNamesEnglish :array[1..12] of string = ('Jan', 'Feb','Mar', 'Apr',
-     'May','Jun','Jul','Aug', 'Sep','Oct','Nov','Dec');
+  RFC1123_StrWeekDay :array[1..7] of string =
+    ('Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun');
+  RFC1123_StrMonth :array[1..12] of string =
+    ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec');
 var
   LDateTime: TDateTime;
+  LYear, LMonth, LDay, LDayOfWeek: Word;
+  LHour, LMin,   LSec, LMSec: Word;
 begin
   if not AIsUtcDateTime then
     LDateTime := Self.ToUniversalTime
   else
     LDateTime := Self;
 
-  Result := ShortDayNamesEnglish[DayOfTheWeek(LDateTime)] + ', ' +
-    FormatDateTime('dd', LDateTime) + ' ' +
-    ShortMonthNamesEnglish[MonthOf(LDateTime)] + ' ' +
-    FormatDateTime('yyyy hh:nn:ss', LDateTime) + ' GMT';
+//  // Fri, 30 Jul 2024 10:10:35 GMT
+//  Result := FormatDateTime('ddd, dd mmm yyyy hh":"nn":"ss "GMT"', LDateTime);
+
+  DecodeDateTime(LDateTime,
+    LYear, LMonth, LDay,
+    LHour, LMin,   LSec, LMSec);
+  LDayOfWeek := DayOfTheWeek(LDateTime);
+
+  // Fri, 30 Jul 2024 10:10:35 GMT
+  Result := Format('%s, %.2d %s %.4d %.2d:%.2d:%.2d GMT', [
+    RFC1123_StrWeekDay[LDayOfWeek],
+    LDay,
+    RFC1123_StrMonth[LMonth],
+    LYear, LHour, LMin, LSec
+  ]);
 end;
 
 function TDateTimeHelper.ToString(const AFormatStr: string): string;
@@ -637,7 +661,7 @@ class function TDateTimeHelper.TryStrToDateTime(const AStr: string;
   begin
     Result := P;
     V := 0;
-    while (Result^ in ['0'..'9']) and (MaxLen > 0) do
+    while CharInSet(Result^, ['0'..'9']) and (MaxLen > 0) do
     begin
       V := V * 10 + (Ord(Result^) - Ord('0'));
       Inc(Result);
@@ -663,7 +687,7 @@ begin
   begin
     Inc(P, 6);
     LMSecsSince1970 := 0;
-    while (P < PEnd) and (P^ in ['0'..'9']) do
+    while (P < PEnd) and CharInSet(P^, ['0'..'9']) do
     begin
       LMSecsSince1970 := LMSecsSince1970 * 10 + (Ord(P^) - Ord('0'));
       Inc(P);
@@ -671,7 +695,7 @@ begin
     if (P^ = '+') or (P^ = '-') then // timezone information
     begin
       Inc(P);
-      while (P < PEnd) and (P^ in ['0'..'9']) do
+      while (P < PEnd) and CharInSet(P^, ['0'..'9']) do
         Inc(P);
     end;
     if (P + 2 = PEnd) and (P[0] = ')') and (P[1] = '/') then
@@ -751,7 +775,7 @@ begin
       begin
         P := ParseDateTimePart(P + 1, LSec, 2);
         if (P^ = '.') then
-          P := ParseDateTimePart(P + 1, LMSec, 3);
+          ParseDateTimePart(P + 1, LMSec, 3);
       end;
       if not TryEncodeTime(LHour, LMin, LSec, LMSec, LTime) then Exit(False);
       ADateTime := ADateTime + LTime;
@@ -863,14 +887,22 @@ begin
 end;
 {$ENDIF}
 
-{$IFDEF FPC}
-initialization
-  DefaultFormatSettings.ShortDateFormat := AnsiString('yyyy-mm-dd');
-  DefaultFormatSettings.ShortTimeFormat := AnsiString('hh":"NN":"ss');
-  DefaultFormatSettings.LongDateFormat := AnsiString('yyyy-mm-dd');
-  DefaultFormatSettings.LongTimeFormat := AnsiString('hh":"NN":"ss');
-  DefaultFormatSettings.DateSeparator := AnsiChar('-');
-  DefaultFormatSettings.TimeSeparator := AnsiChar(':');
-{$ENDIF}
+procedure InitDefaultFormatSettings;
+var
+  I: Integer;
+begin
+  FormatSettings.ShortDateFormat := 'yyyy-mm-dd';
+  FormatSettings.ShortTimeFormat := 'hh":"nn":"ss';
+  FormatSettings.LongDateFormat := 'yyyy-mm-dd';
+  FormatSettings.LongTimeFormat := 'hh":"nn":"ss';
+  FormatSettings.DateSeparator := '-';
+  FormatSettings.TimeSeparator := ':';
+
+  for I := Low(ShortDayNamesEnglish) to High(ShortDayNamesEnglish) do
+    FormatSettings.ShortDayNames[I] := ShortDayNamesEnglish[I];
+
+  for I := Low(ShortMonthNamesEnglish) to High(ShortMonthNamesEnglish) do
+    FormatSettings.ShortMonthNames[I] := ShortMonthNamesEnglish[I];
+end;
 
 end.
