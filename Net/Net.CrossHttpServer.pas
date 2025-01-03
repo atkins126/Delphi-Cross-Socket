@@ -476,14 +476,17 @@ type
     function GetConnection: ICrossHttpConnection;
     function GetRequest: ICrossHttpRequest;
     function GetStatusCode: Integer;
-    procedure SetStatusCode(Value: Integer);
+    function GetStatusText: string;
     function GetContentType: string;
-    procedure SetContentType(const Value: string);
     function GetLocation: string;
-    procedure SetLocation(const Value: string);
     function GetHeader: THttpHeader;
     function GetCookies: TResponseCookies;
     function GetSent: Boolean;
+
+    procedure SetContentType(const Value: string);
+    procedure SetLocation(const Value: string);
+    procedure SetStatusCode(Value: Integer);
+    procedure SetStatusText(const Value: string);
 
     /// <summary>
     ///   重置数据
@@ -912,6 +915,11 @@ type
     ///   状态码
     /// </summary>
     property StatusCode: Integer read GetStatusCode write SetStatusCode;
+
+    /// <summary>
+    ///   状态文本
+    /// </summary>
+    property StatusText: string read GetStatusText write SetStatusText;
 
     /// <summary>
     ///   内容类型
@@ -1963,6 +1971,7 @@ type
     FConnection: TCrossHttpConnection;
     FRequest: ICrossHttpRequest;
     FStatusCode: Integer;
+    FStatusText: string;
     FHeader: THttpHeader;
     FCookies: TResponseCookies;
     FSendStatus: Integer;
@@ -2023,14 +2032,17 @@ type
     function GetConnection: ICrossHttpConnection;
     function GetRequest: ICrossHttpRequest;
     function GetStatusCode: Integer;
-    procedure SetStatusCode(Value: Integer);
+    function GetStatusText: string;
     function GetContentType: string;
-    procedure SetContentType(const Value: string);
     function GetLocation: string;
-    procedure SetLocation(const Value: string);
     function GetHeader: THttpHeader;
     function GetCookies: TResponseCookies;
     function GetSent: Boolean;
+
+    procedure SetContentType(const Value: string);
+    procedure SetLocation(const Value: string);
+    procedure SetStatusCode(Value: Integer);
+    procedure SetStatusText(const Value: string);
   public
     constructor Create(const AConnection: TCrossHttpConnection);
     destructor Destroy; override;
@@ -3298,6 +3310,8 @@ var
   LRequest: TCrossHttpRequest;
 begin
   LRequest := AConnection.Request as TCrossHttpRequest;
+  if (LRequest.Body = nil) then Exit;
+
   Inc(LRequest.FPostDataSize, ALen);
 
   case LRequest.GetBodyType of
@@ -3318,6 +3332,7 @@ var
   LUrlEncodedBody: THttpUrlParams;
 begin
   LRequest := AConnection.Request as TCrossHttpRequest;
+  if (LRequest.Body = nil) then Exit;
 
   case LRequest.GetBodyType of
     btUrlEncoded:
@@ -3892,6 +3907,11 @@ begin
   Result := FStatusCode;
 end;
 
+function TCrossHttpResponse.GetStatusText: string;
+begin
+  Result := FStatusText;
+end;
+
 procedure TCrossHttpResponse.Json(const AJson: string;
   const ACallback: TCrossConnectionCallback);
 begin
@@ -3974,7 +3994,7 @@ procedure TCrossHttpResponse.Send(const ABody: TStream;
 var
   LCompressType: TCompressType;
 begin
-  if _CheckCompress(ABody.Size, LCompressType) then
+  if (ABody <> nil) and _CheckCompress(ABody.Size, LCompressType) then
     SendZCompress(ABody, AOffset, ACount, LCompressType, ACallback)
   else
     SendNoCompress(ABody, AOffset, ACount, ACallback);
@@ -4256,6 +4276,14 @@ end;
 procedure TCrossHttpResponse.SetStatusCode(Value: Integer);
 begin
   FStatusCode := Value;
+
+  if (FStatusCode >= 400) then
+    FHeader[HEADER_CONNECTION] := 'close';
+end;
+
+procedure TCrossHttpResponse.SetStatusText(const Value: string);
+begin
+  FStatusText := Value;
 end;
 
 function TCrossHttpResponse._CheckCompress(const ABodySize: Int64;
@@ -4298,7 +4326,7 @@ end;
 function TCrossHttpResponse._CreateHeader(const ABodySize: Int64;
   AChunked: Boolean): TBytes;
 var
-  LHeaderStr: string;
+  LHeaderStr, LStatusText: string;
   LCookie: TResponseCookie;
 begin
   if (GetContentType = '') then
@@ -4319,8 +4347,12 @@ begin
   if (FHeader[HEADER_CROSS_HTTP_SERVER] = '') then
     FHeader[HEADER_CROSS_HTTP_SERVER] := CROSS_HTTP_SERVER_NAME;
 
+  if (FStatusText <> '') then
+    LStatusText := FStatusText
+  else
+    LStatusText := TCrossHttpUtils.GetHttpStatusText(FStatusCode);
   LHeaderStr := FRequest.Version + ' ' + FStatusCode.ToString + ' ' +
-    TCrossHttpUtils.GetHttpStatusText(FStatusCode) + #13#10;
+    LStatusText + #13#10;
 
   for LCookie in FCookies do
     LHeaderStr := LHeaderStr + HEADER_SETCOOKIE + ': ' + LCookie.Encode + #13#10;
@@ -4514,6 +4546,12 @@ var
   LBody: TStream;
   LHeaderBytes, LBuffer: TBytes;
 begin
+  if (ABody = nil) then
+  begin
+    SendNoCompress(nil, 0, ACallback);
+    Exit;
+  end;
+
   LOffset := AOffset;
   LCount := ACount;
   TCrossHttpUtils.AdjustOffsetCount(ABody.Size, LOffset, LCount);
@@ -4585,7 +4623,7 @@ end;
 procedure TCrossHttpResponse.SendStatus(const AStatusCode: Integer;
   const ADescription: string; const ACallback: TCrossConnectionCallback);
 begin
-  FStatusCode := AStatusCode;
+  SetStatusCode(AStatusCode);
   Send(ADescription, ACallback);
 end;
 
@@ -4793,6 +4831,12 @@ var
   LBody: TStream;
   LBuffer: TBytes;
 begin
+  if (ABody = nil) then
+  begin
+    SendNoCompress(nil, 0, ACallback);
+    Exit;
+  end;
+
   LOffset := AOffset;
   LCount := ACount;
   TCrossHttpUtils.AdjustOffsetCount(ABody.Size, LOffset, LCount);
