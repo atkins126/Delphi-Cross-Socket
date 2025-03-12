@@ -24,6 +24,7 @@ uses
   Utils.StrUtils;
 
 type
+  TCrossHttpParseMode = (pmServer, pmClient);
   TCrossHttpParseState = (psIdle, psHeader, psBodyData, psChunkSize, psChunkData, psChunkEnd, psDone);
 
   TOnHeaderData = procedure(const ADataPtr: Pointer; const ADataSize: Integer) of object;
@@ -37,6 +38,7 @@ type
 
   TCrossHttpParser = class
   private
+    FMode: TCrossHttpParseMode;
     FMaxHeaderSize, FMaxBodyDataSize: Integer;
     FOnHeaderData: TOnHeaderData;
     FOnGetHeaderValue: TOnGetHeaderValue;
@@ -48,7 +50,7 @@ type
     FOnParseFailed: TOnParseFailed;
 
     FContentLength: Int64;
-    FTransferEncoding, FContentEncoding: string;
+    FTransferEncoding, FContentEncoding, FConnectionStr: string;
     FIsChunked: Boolean;
 
     FParsedBodySize: Int64;
@@ -56,6 +58,7 @@ type
     FCRCount, FLFCount: Integer;
     FHeaderStream, FChunkSizeStream: TMemoryStream;
     FChunkSize, FChunkLeftSize: Integer;
+    FHasBody: Boolean;
 
     // 动态解压
     FZCompressed: Boolean;
@@ -76,7 +79,7 @@ type
 
     procedure _Reset;
   public
-    constructor Create;
+    constructor Create(const AMode: TCrossHttpParseMode);
     destructor Destroy; override;
 
     procedure Decode(var ABuf: Pointer; var ALen: Integer);
@@ -98,14 +101,23 @@ implementation
 
 { TCrossHttpParser }
 
-constructor TCrossHttpParser.Create;
+constructor TCrossHttpParser.Create(const AMode: TCrossHttpParseMode);
 begin
+  FMode := AMode;
   FHeaderStream := TMemoryStream.Create;
   FParseState := psIdle;
 end;
 
 destructor TCrossHttpParser.Destroy;
 begin
+  // 只有 client 模式才需要在断开连接时继续处理 body 数据
+  if (FMode = pmClient) and (FParseState = psBodyData) and FHasBody then
+  begin
+    FParseState := psDone;
+    _OnBodyEnd;
+    _OnParseSuccess;
+  end;
+
   FreeAndNil(FHeaderStream);
 
   inherited;
@@ -195,17 +207,45 @@ begin
               // br: Brotli压缩算法, Brotli通常比gzip和deflate更高效
               _OnGetHeaderValue(HEADER_CONTENT_ENCODING, FContentEncoding);
 
+              // 读取响应头中连接保持方式
+              _OnGetHeaderValue(HEADER_CONNECTION, FConnectionStr);
+
               FContentLength := StrToInt64Def(LContentLength, -1);
               FIsChunked := TStrUtils.SameText(FTransferEncoding, 'chunked');
 
+              // 先通过响应头中的内容大小检查下是否超大了
               if (FMaxBodyDataSize > 0) and (FContentLength > FMaxBodyDataSize) then
               begin
                 _OnParseFailed(400, 'Post data too large.');
                 Exit;
               end;
 
-              // 如果 ContentLength 大于 0, 或者是 Chunked 编码, 则还需要接收 body 数据
-              if (FContentLength > 0) or FIsChunked then
+              // 根据不同模式确认是否有body数据
+              if (FMode = pmServer) then
+                // server 模式要求客户端必须要传 Content-Length 或 Transfer-Encoding
+                // 才表示有 body 数据
+                FHasBody := (FContentLength > 0) or FIsChunked
+              else
+              begin
+                // 响应头中没有 Content-Length,Transfer-Encoding
+                // 然后还是保持连接的, 这一定是非法数据
+                if (FContentLength < 0) and not FIsChunked
+                  and TStrUtils.SameText(FConnectionStr, 'keep-alive') then
+                begin
+                  _OnParseFailed(400, 'Invalid response data.');
+                  Exit;
+                end;
+
+                // 如果 ContentLength 大于 0, 或者是 Chunked 编码
+                //   还有种特殊情况就是 ContentLength 和 Chunked 都没有
+                //   并且响应头中包含 Connection: close
+                //   这种需要在连接断开时处理body
+                FHasBody := (FContentLength > 0) or FIsChunked
+                  or TStrUtils.SameText(FConnectionStr, 'close');
+              end;
+
+              // 如果需要接收 body 数据
+              if FHasBody then
               begin
                 FParsedBodySize := 0;
 
@@ -228,7 +268,9 @@ begin
         // 非Chunked编码的Post数据(有 ContentLength)
         psBodyData:
           begin
-            LChunkSize := Min((FContentLength - FParsedBodySize), LPtrEnd - LPtr);
+            LChunkSize := LPtrEnd - LPtr;
+            if (FContentLength > 0) then
+              LChunkSize := Min(FContentLength - FParsedBodySize, LChunkSize);
             if (FMaxBodyDataSize > 0) and (FParsedBodySize + LChunkSize > FMaxBodyDataSize) then
             begin
               _OnParseFailed(400, 'Post data too large.');
@@ -240,7 +282,7 @@ begin
             Inc(FParsedBodySize, LChunkSize);
             Inc(LPtr, LChunkSize);
 
-            if (FParsedBodySize >= FContentLength) then
+            if (FContentLength > 0) and (FParsedBodySize >= FContentLength) then
             begin
               FParseState := psDone;
               _OnBodyEnd();

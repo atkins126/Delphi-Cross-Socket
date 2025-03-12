@@ -654,7 +654,14 @@ type
     FPeerPort: Word;
     FConnectType: TConnectType;
     FConnectStatus: Integer;
+    FRecvLock, FSentLock: ILock;
     FConnectCb: TCrossConnectionCallback;
+  protected
+    procedure _LockRecv; inline;
+    procedure _UnlockRecv; inline;
+
+    procedure _LockSent; inline;
+    procedure _UnlockSent; inline;
   protected
     function GetUIDTag: Byte; override;
     function GetPeerAddr: string;
@@ -666,6 +673,7 @@ type
     function _SetConnectStatus(const AStatus: TConnectStatus): TConnectStatus; inline;
     procedure SetConnectStatus(const AValue: TConnectStatus);
 
+    procedure InternalClose; virtual;
     procedure DirectSend(const ABuffer: Pointer; const ACount: Integer;
       const ACallback: TCrossConnectionCallback = nil); virtual;
   public
@@ -1246,7 +1254,6 @@ begin
   LConnObj._Lock;
   try
     AConnection.ConnectStatus := csClosed;
-
     LogicDisconnected(AConnection);
 
     if Assigned(FOnDisconnected) then
@@ -1313,14 +1320,14 @@ var
 begin
   LConnObj := AConnection as TCrossConnectionBase;
 
-  LConnObj._Lock;
+  LConnObj._LockRecv;
   try
     LogicReceived(AConnection, ABuf, ALen);
 
     if Assigned(FOnReceived) then
       FOnReceived(Self, AConnection, ABuf, ALen);
   finally
-    LConnObj._Unlock;
+    LConnObj._UnlockRecv;
   end;
 end;
 
@@ -1331,14 +1338,14 @@ var
 begin
   LConnObj := AConnection as TCrossConnectionBase;
 
-  LConnObj._Lock;
+  LConnObj._LockSent;
   try
     LogicSent(AConnection, ABuf, ALen);
 
     if Assigned(FOnSent) then
       FOnSent(Self, AConnection, ABuf, ALen);
   finally
-    LConnObj._Unlock;
+    LConnObj._UnlockSent;
   end;
 end;
 
@@ -1566,6 +1573,9 @@ begin
 
   FConnectType := AConnectType;
   FConnectCb := AConnectedCb;
+
+  FRecvLock := TLock.Create;
+  FSentLock := TLock.Create;
 end;
 
 procedure TCrossConnectionBase.SetConnectStatus(const AValue: TConnectStatus);
@@ -1579,7 +1589,7 @@ begin
 
   if (FSocket <> INVALID_SOCKET) then
   begin
-    TSocketAPI.CloseSocket(FSocket);
+    InternalClose;
     FOwner.TriggerDisconnected(Self);
     FSocket := INVALID_SOCKET;
   end;
@@ -1669,6 +1679,11 @@ end;
 function TCrossConnectionBase.GetUIDTag: Byte;
 begin
   Result := UID_CONNECTION;
+end;
+
+procedure TCrossConnectionBase.InternalClose;
+begin
+  TSocketAPI.CloseSocket(FSocket);
 end;
 
 procedure TCrossConnectionBase.SendBuf(const ABuffer: Pointer;
@@ -1840,10 +1855,30 @@ begin
   {$endregion}
 end;
 
+procedure TCrossConnectionBase._LockRecv;
+begin
+  FRecvLock.Enter;
+end;
+
+procedure TCrossConnectionBase._LockSent;
+begin
+  FSentLock.Enter;
+end;
+
 function TCrossConnectionBase._SetConnectStatus(
   const AStatus: TConnectStatus): TConnectStatus;
 begin
   Result := TConnectStatus(AtomicExchange(FConnectStatus, Integer(AStatus)));
+end;
+
+procedure TCrossConnectionBase._UnlockRecv;
+begin
+  FRecvLock.Leave;
+end;
+
+procedure TCrossConnectionBase._UnlockSent;
+begin
+  FSentLock.Leave;
 end;
 
 end.

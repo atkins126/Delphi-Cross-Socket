@@ -41,7 +41,8 @@ uses
   Net.SocketAPI,
   Net.CrossSocket.Base,
 
-  Utils.SyncObjs;
+  Utils.SyncObjs,
+  Utils.ArrayUtils;
 
 type
   TIoEvent = (ieRead, ieWrite);
@@ -50,10 +51,8 @@ type
   TEpollListen = class(TCrossListenBase)
   private
     FEpollHandle: Integer;
-    FIoEvents: TIoEvents;
     FOpCode: Integer;
 
-    function _ReadEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
   public
     constructor Create(const AOwner: TCrossSocketBase; const AListenSocket: TSocket;
@@ -76,14 +75,11 @@ type
   private
     FEpollHandle: Integer;
     FSendQueue: TSendQueue;
-    FIoEvents: TIoEvents;
     FEpLock: ILock;
     FOpCode: Integer;
+    FInPending, FOutPending: Integer;
 
-    function _ReadEnabled: Boolean; inline;
-    function _WriteEnabled: Boolean; inline;
     function _UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
-
     procedure _ClearSendQueue;
 
     // 为了减少死锁的可能, 不使用父类的 _Lock/_Unlock
@@ -92,12 +88,12 @@ type
     // 在接收完数据之后马上发送数据, 如果使用同一把锁可能会引起死锁
     procedure _EpLock; inline;
     procedure _EpUnlock; inline;
+  protected
+    procedure InternalClose; override;
   public
     constructor Create(const AOwner: TCrossSocketBase; const AClientSocket: TSocket;
       const AConnectType: TConnectType; const AConnectCb: TCrossConnectionCallback); override;
     destructor Destroy; override;
-
-    procedure Close; override;
   end;
 
   // KQUEUE 与 EPOLL 队列的差异
@@ -195,23 +191,16 @@ begin
   FEpollHandle := TEpollCrossSocket(Owner).FEpollHandle;
 end;
 
-function TEpollListen._ReadEnabled: Boolean;
-begin
-  Result := (ieRead in FIoEvents);
-end;
-
 function TEpollListen._UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
 var
   LEvent: TEPoll_Event;
 begin
-  FIoEvents := AIoEvents;
-
-  if (FIoEvents = []) or IsClosed then Exit(False);
+  if (AIoEvents = []) or IsClosed then Exit(False);
 
   LEvent.Events := EPOLLET or EPOLLONESHOT;
   LEvent.Data.u64 := Self.UID;
 
-  if _ReadEnabled then
+  if (ieRead in AIoEvents) then
     LEvent.Events := LEvent.Events or EPOLLIN;
 
   Result := (epoll_ctl(FEpollHandle, FOpCode, Socket, @LEvent) >= 0);
@@ -262,20 +251,17 @@ begin
   inherited;
 end;
 
-procedure TEpollConnection.Close;
+procedure TEpollConnection.InternalClose;
 begin
   _EpLock;
   try
-    if (GetConnectStatus = csClosed) then Exit;
-
     _ClearSendQueue;
-
     epoll_ctl(FEpollHandle, EPOLL_CTL_DEL, Socket, nil);
-
-    inherited Close;
   finally
     _EpUnlock;
   end;
+
+  inherited InternalClose;
 end;
 
 procedure TEpollConnection._ClearSendQueue;
@@ -311,27 +297,24 @@ begin
   FEpLock.Leave;
 end;
 
-function TEpollConnection._ReadEnabled: Boolean;
-begin
-  Result := (ieRead in FIoEvents);
-end;
-
 function TEpollConnection._UpdateIoEvent(const AIoEvents: TIoEvents): Boolean;
 var
   LEvent: TEPoll_Event;
 begin
-  FIoEvents := AIoEvents;
+  if (AIoEvents = []) or IsClosed then Exit(False);
 
-  if (FIoEvents = []) or IsClosed then Exit(False);
+  LEvent.Events := 0;
 
-  LEvent.Events := EPOLLET or EPOLLONESHOT or EPOLLERR or EPOLLHUP;
-  LEvent.Data.u64 := Self.UID;
-
-  if _ReadEnabled then
+  if (ieRead in AIoEvents) and (AtomicCmpExchange(FInPending, 0, 0) = 0) then
     LEvent.Events := LEvent.Events or EPOLLIN;
 
-  if _WriteEnabled then
+  if (ieWrite in AIoEvents) and (AtomicCmpExchange(FOutPending, 0, 0) = 0) then
     LEvent.Events := LEvent.Events or EPOLLOUT;
+
+  if (LEvent.Events = 0) then Exit(False);
+
+  LEvent.Events := LEvent.Events or EPOLLET or EPOLLONESHOT or EPOLLERR or EPOLLHUP;
+  LEvent.Data.u64 := Self.UID;
 
   Result := (epoll_ctl(FEpollHandle, FOpCode, Socket, @LEvent) >= 0);
   FOpCode := EPOLL_CTL_MOD;
@@ -342,12 +325,6 @@ begin
       [Self.DebugInfo, LEvent.Events]);
     Close;
   end;
-end;
-
-
-function TEpollConnection._WriteEnabled: Boolean;
-begin
-  Result := (ieWrite in FIoEvents);
 end;
 
 { TEpollCrossSocket }
@@ -465,45 +442,54 @@ end;
 procedure TEpollCrossSocket._HandleRead(const AConnection: ICrossConnection);
 var
   LConnection: ICrossConnection;
+  LEpConnection: TEpollConnection;
   LRcvd, LError: Integer;
 begin
   LConnection := AConnection;
+  LEpConnection := LConnection as TEpollConnection;
 
-  while True do
-  begin
-    LRcvd := TSocketAPI.Recv(LConnection.Socket, FRecvBuf[0], RCV_BUF_SIZE);
-
-    // 对方主动断开连接
-    if (LRcvd = 0) then
+  AtomicIncrement(LEpConnection.FInPending);
+  try
+    while True do
     begin
-      _Log('Recv=0(Close), %s', [LConnection.DebugInfo]);
-      LConnection.Close;
-      Break;
-    end;
+      LRcvd := TSocketAPI.Recv(LConnection.Socket, FRecvBuf[0], RCV_BUF_SIZE);
 
-    if (LRcvd < 0) then
-    begin
-      LError := GetLastError;
-
-      // 被系统信号中断, 可以重新recv
-      if (LError = EINTR) then
-        Continue
-      // 接收缓冲区中数据已经被取完了
-      else if (LError = EAGAIN) or (LError = EWOULDBLOCK) then
-        Break
-      else
-      // 接收出错
+      // 对方主动断开连接
+      if (LRcvd = 0) then
       begin
-        _LogLastOsError('Recv<0, %s', [LConnection.DebugInfo]);
-
+        _Log('Recv=0(Close), %s', [LConnection.DebugInfo]);
         LConnection.Close;
         Break;
       end;
+
+      if (LRcvd < 0) then
+      begin
+        LError := GetLastError;
+
+        // 被系统信号中断, 可以重新recv
+        if (LError = EINTR) then
+        begin
+          _LogLastOsError('Recv=EINTR, %s', [LConnection.DebugInfo]);
+          Continue
+        end else
+        // 接收缓冲区中数据已经被取完了
+        if (LError = EAGAIN) or (LError = EWOULDBLOCK) then
+          Break
+        else
+        // 接收出错
+        begin
+          _LogLastOsError('Recv<0, %s', [LConnection.DebugInfo]);
+          LConnection.Close;
+          Break;
+        end;
+      end;
+
+      TriggerReceived(LConnection, @FRecvBuf[0], LRcvd);
+
+      if (LRcvd < RCV_BUF_SIZE) then Break;
     end;
-
-    TriggerReceived(LConnection, @FRecvBuf[0], LRcvd);
-
-    if (LRcvd < RCV_BUF_SIZE) then Break;
+  finally
+    AtomicDecrement(LEpConnection.FInPending);
   end;
 end;
 
@@ -513,10 +499,14 @@ var
   LEpConnection: TEpollConnection;
   LSendItem: PSendItem;
   LSent, LError: Integer;
+  LSendCbArr: TArray<TCrossConnectionCallback>;
+  LSendCb: TCrossConnectionCallback;
 begin
   LConnection := AConnection;
   LEpConnection := LConnection as TEpollConnection;
+  LSendCbArr := [];
 
+  AtomicIncrement(LEpConnection.FOutPending);
   LEpConnection._EpLock;
   try
     while True do
@@ -533,8 +523,7 @@ begin
       // 对方主动断开连接
       if (LSent = 0) then
       begin
-        _Log('Send=0(close), %s', [LConnection.DebugInfo]);
-
+        _Log('Send=0(Close), %s', [LConnection.DebugInfo]);
         LConnection.Close;
         Break;
       end;
@@ -546,15 +535,17 @@ begin
 
         // 被系统信号中断, 可以重新send
         if (LError = EINTR) then
-          Continue
+        begin
+          _LogLastOsError('Send=EINTR, %s', [LConnection.DebugInfo]);
+          Continue;
+        end else
         // 发送缓冲区已被填满了, 需要等下次唤醒发送线程再继续发送
-        else if (LError = EAGAIN) or (LError = EWOULDBLOCK) then
+        if (LError = EAGAIN) or (LError = EWOULDBLOCK) then
           Break
         // 发送出错
         else
         begin
           _LogLastOsError('Send<0, %s', [LConnection.DebugInfo]);
-
           LConnection.Close;
           Break;
         end;
@@ -563,11 +554,12 @@ begin
       // 全部发送完成
       if (LSent >= LSendItem.Size) then
       begin
-        // 调用回调
-        if Assigned(LSendItem.Callback) then
-          LSendItem.Callback(LConnection, True);
+        TArrayUtils<TCrossConnectionCallback>.Append(LSendCbArr, LSendItem.Callback);
 
         // 发送成功, 移除已发送成功的数据
+        // 必须先从队列移除已发完的数据项, 然后再执行发送成功的回调
+        // 因为回调里可能还会发送新的数据, 如果先执行回调再去移除,
+        // 就会错误的将回调中放到队列里的新数据移除
         if (LEpConnection.FSendQueue.Count > 0) then
           LEpConnection.FSendQueue.Delete(0);
       end else
@@ -579,7 +571,12 @@ begin
     end;
   finally
     LEpConnection._EpUnlock;
+    AtomicDecrement(LEpConnection.FOutPending);
   end;
+
+  // 调用回调
+  for LSendCb in LSendCbArr do
+    LSendCb(LConnection, True);
 end;
 
 procedure TEpollCrossSocket._OpenIdleHandle;
@@ -877,8 +874,7 @@ begin
 
     // 由于epoll队列中每个套接字只有一条记录, 为了避免监视发送数据的时候
     // 无法接收数据, 这里必须同时监视读和写
-    if not LEpConnection._WriteEnabled then
-      LEpConnection._UpdateIoEvent([ieRead, ieWrite]);
+    LEpConnection._UpdateIoEvent([ieRead, ieWrite]);
   finally
     LEpConnection._EpUnlock;
   end;
@@ -1005,7 +1001,7 @@ begin
             LIoEvents := [ieRead, ieWrite]
           else
             LIoEvents := [ieRead];
-          LSuccess := LEpConnection._UpdateIoEvent(LIoEvents);
+          LEpConnection._UpdateIoEvent(LIoEvents);
         finally
           LEpConnection._EpUnlock;
         end;
