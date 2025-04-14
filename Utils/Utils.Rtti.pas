@@ -15,6 +15,9 @@ uses
   ;
 
 type
+
+  { TRttiUtils }
+
   TRttiUtils = class
   private class var
     FContext: TRttiContext;
@@ -120,6 +123,7 @@ type
     class function StrToType<T>(const S: string): T; static;
 
     class function MakeEmptyTValue(ATypeInfo: PTypeInfo): TValue; static;
+    class function IsEmptyTValue(const AValue: TValue): Boolean; static;
   end;
 
   TValueHelper = record helper for TValue
@@ -154,7 +158,7 @@ implementation
 
 class constructor TRttiUtils.Create;
 begin
-  FContext := TRttiContext.Create;
+  FContext := TRttiContext.Create({$IFDEF FPC}False{$ENDIF});
 end;
 
 class function TRttiUtils.EnumToStr<T>(e: T): string;
@@ -631,6 +635,27 @@ begin
   // 这相当于将目标数据全部置零
   TValue.Make(nil, ATypeInfo, Result);
 end;
+
+class function TRttiUtils.IsEmptyTValue(const AValue: TValue): Boolean;
+{$IFDEF DELPHI}
+begin
+	Result := AValue.IsEmpty;
+end;
+{$ELSE}
+var
+  LTypeInfo: PTypeInfo;
+begin
+  LTypeInfo := AValue.TypeInfo;
+
+  if (LTypeInfo = nil) then Exit(True);
+
+  case LTypeInfo^.Kind of
+	   tkInterface: Result := PPointer(AValue.GetReferenceToRawData)^ = nil;
+  else
+  	 Result := AValue.IsEmpty;
+  end;
+end;
+{$ENDIF}
 
 { TValueHelper }
 
